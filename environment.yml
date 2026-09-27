@@ -1,0 +1,20 @@
+name: traj
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - numpy==1.26.4
+      - scipy==1.17.1
+      - matplotlib==3.11.2
+      - pandas==3.0.6
+      - tqdm==4.70.1
+      - casadi==3.8.1
+      - pillow==12.3.0
+      - imageio==2.37.4
+      - mujoco==3.14.0
+      - dm_control==1.0.47
+      # GPU build used for the experiments (CUDA 12.6 wheel):
+      #   pip install torch==2.14.0 --index-url https://download.pytorch.org/whl/cu126
+      - torch==2.14.0

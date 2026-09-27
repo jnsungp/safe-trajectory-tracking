@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+# large, regenerable artifacts
+starter_code/results/models/
+starter_code/results/*.pkl
+starter_code/fig/animation*.gif
+# course handout (not redistributed) and blog build sources (published in jnsungp.github.io)
+*.pdf
+blog_build/

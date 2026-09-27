@@ -1,0 +1,46 @@
+[
+ {
+  "grid": "coarse",
+  "n_states": 540000,
+  "n_actions": 110,
+  "n_noise_nodes": 27,
+  "n_params": 540000,
+  "value_MB": 2.0599365234375,
+  "sec_per_iter": 1.5174866681918502,
+  "peak_gpu_MB": 774.05810546875,
+  "dense_P_table_GB": 7.081031799316406
+ },
+ {
+  "grid": "medium",
+  "n_states": 3364000,
+  "n_actions": 110,
+  "n_noise_nodes": 27,
+  "n_params": 3364000,
+  "value_MB": 12.8326416015625,
+  "sec_per_iter": 8.470738016068935,
+  "peak_gpu_MB": 852.326171875,
+  "dense_P_table_GB": 44.112205505371094
+ },
+ {
+  "grid": "fine",
+  "n_states": 12150000,
+  "n_actions": 110,
+  "n_noise_nodes": 27,
+  "n_params": 12150000,
+  "value_MB": 46.34857177734375,
+  "sec_per_iter": 29.462095951195806,
+  "peak_gpu_MB": 1046.37744140625,
+  "dense_P_table_GB": 159.32321548461914
+ },
+ {
+  "grid": "medium-RBF(avg)",
+  "n_states": 3364000,
+  "n_actions": 110,
+  "n_noise_nodes": 27,
+  "n_params": 450000,
+  "value_MB": 1.71661376953125,
+  "sec_per_iter": 8.442999785766006,
+  "peak_gpu_MB": 876.08544921875,
+  "dense_P_table_GB": 44.112205505371094
+ }
+]
