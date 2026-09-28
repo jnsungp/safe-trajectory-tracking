@@ -15,7 +15,7 @@
 <div class="topnote">
   A continuation of my project from <a href="https://natanaso.github.io/ece276b/">UCSD ECE 276B: Planning &amp; Learning in Robotics</a>
   &nbsp;·&nbsp; <a href="../../">Home</a> &nbsp;·&nbsp;
-  <a href="https://github.com/jnsungp/safe-trajectory-tracking">Original project code</a>
+  <a href="https://github.com/jnsungp/safe-trajectory-tracking">Code and data</a>
 </div>
 
 <h1 class="title">Tracking Through a Five-Centimeter Gap</h1>
@@ -141,9 +141,9 @@
   The next controlled comparison is to give CEC the same calibrated risk information and compare both methods at matched safety targets. I would also vary the corridor width and check how the detour threshold moves. Those interventions test whether the route and margin explanation generalizes beyond this particular five-centimeter gap.
 </p>
 
-<h2>Source and scope</h2>
+<h2>Reproduce the rerun</h2>
 <p>
-  The <a href="https://github.com/jnsungp/safe-trajectory-tracking">public project repository</a> currently contains the earlier implementation and report. The corrected source and aggregate JSON used here have been prepared but are not yet published there. This article reports the corrected 200-seed rerun and first-collision analysis.
+  The <a href="https://github.com/jnsungp/safe-trajectory-tracking">repository</a> contains the revised model specifications, 200-seed rollout suites, phase experiment, analysis script, figure generator, and aggregate JSON. The original hypothesis report is retained as a record of the earlier implementation; this article uses the corrected models and <code>revised_summary.json</code>.
 </p>
 <hr>
 <p class="footnote">Built on the starter code of ECE 276B (Nikolay Atanasov, UC San Diego). The initial implementation used an AI coding assistant; the rerun and article revision used Codex. Numerical claims above come from the saved revised rollouts and analysis scripts.</p>
