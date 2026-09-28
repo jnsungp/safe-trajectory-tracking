@@ -17,11 +17,13 @@ the GPU, which needs O(|V|) memory instead of O(|S||A| * neighbors).
 
 Collision handling
 ------------------
-Stage cost  l(t,e,u) = p^T Q p + q (1 - cos eth)^2 + u^T R u + lambda * P_risk(t, e, u)
-with P_risk the probability that the *next* position p_{t+1} = mean + w_xy is outside the free space F,
-computed at the exact continuous next position (not the grid node) with a half-plane approximation
-P(||p + w - c|| < r) ~= Phi(-(||p - c|| - r) / sigma_xy), since r = 0.8 >> sigma. When noise_scale = 0
-a small sigma floor keeps the penalty finite-slope.
+Stage cost  l(t,e,u) = p^T Q p + q (1 - cos eth)^2 + u^T R u + lambda * P_risk(t, e, u).
+The legacy mode uses a half-plane approximation and multiplies obstacle-free probabilities.
+The revised mode uses the noncentral chi-square CDF for each inflated circular obstacle;
+because the disks in this environment are disjoint, their probabilities add exactly.
+It uses a half-millimeter lookup table for fast GPU evaluation. Both modes smooth the
+deterministic k=0 risk with a 1 cm sigma floor. The union of obstacle and workspace
+events remains approximate near obstacles that extend beyond the workspace boundary.
 """
 from dataclasses import dataclass, field, asdict
 import json
@@ -77,6 +79,7 @@ class GpiConfig:
     collision_penalty: float = 1000.0  # lambda in the stage cost
     risk_sigma_floor: float = 0.01  # [m] smoothing of the collision indicator when noise_scale -> 0
     risk_sigma: float = -1.0  # [m] if > 0, overrides the risk-term sigma (used by the 2x2 ablation)
+    risk_mode: str = "exact_disks"  # legacy saved models retain "independent_halfplane"
     value_type: str = "grid"  # "grid" (Part 2) or "rbf" (Part 3)
     # RBF features (eq. 6): centers on a stride sub-lattice, lengthscales in grid-index units.
     # beta_t = 1 / (2 ls_t^2), beta_e = 1 / (2 ls_e^2); alpha is absorbed into theta.
@@ -89,6 +92,7 @@ class GpiConfig:
     device: str = "cuda"
     max_queries: int = 16_000_000  # GPU chunk size (interpolation queries per kernel call)
     online_mode: str = "lookahead"  # "lookahead" (greedy w.r.t. V at the continuous state) or "lookup"
+    rbf_online_value: str = "interpolated"  # legacy saved models retain "kernel"
 
 
 def _gh3_nodes(sig):
@@ -107,6 +111,8 @@ def _gh3_nodes(sig):
 class GPI:
     def __init__(self, config: GpiConfig):
         self.config = cfg = config
+        if cfg.rbf_online_value not in ("kernel", "interpolated"):
+            raise ValueError(cfg.rbf_online_value)
         dev = cfg.device
         if dev.startswith("cuda") and not torch.cuda.is_available():
             dev = cfg.device = "cpu"
@@ -134,6 +140,27 @@ class GPI:
         if cfg.risk_sigma > 0:
             self.sig_risk = float(cfg.risk_sigma)
         self.obs = torch.tensor(cfg.obstacles, **f32)
+        if cfg.risk_mode == "exact_disks":
+            # All inflated disks in this experiment are disjoint. Their event probabilities
+            # therefore add, instead of being combined as independent events.
+            from scipy.stats import ncx2
+            centers = np.asarray(cfg.obstacles, dtype=float)[:, :2]
+            radii = np.asarray(cfg.obstacles, dtype=float)[:, 2] + C.ROBOT_RADIUS + cfg.collision_margin
+            sep = np.linalg.norm(centers[:, None] - centers[None], axis=-1)
+            overlap = sep < radii[:, None] + radii[None, :] - 1e-12
+            np.fill_diagonal(overlap, False)
+            if overlap.any():
+                raise ValueError("exact_disks requires disjoint inflated obstacles")
+            self.risk_lookup_step = 0.0005
+            self.risk_lookup = []
+            for radius in radii:
+                distances = np.arange(0.0, radius + 10 * self.sig_risk + self.risk_lookup_step,
+                                      self.risk_lookup_step)
+                prob = ncx2.cdf((radius / self.sig_risk) ** 2, 2,
+                                 (distances / self.sig_risk) ** 2)
+                self.risk_lookup.append(torch.tensor(prob, **f32))
+        elif cfg.risk_mode != "independent_halfplane":
+            raise ValueError(cfg.risk_mode)
         # all grid nodes, flattened in (ix, iy, ith) order to match V tables of shape (T, nx, ny, nth)
         EX, EY, ETH = torch.meshgrid(g.ex, g.ey, g.th, indexing="ij")
         self.E_all = torch.stack([EX.ravel(), EY.ravel(), ETH.ravel()], 1)  # (S, 3)
@@ -173,8 +200,8 @@ class GPI:
         pass
 
     def _build_online_evaluator(self):
-        self._online_eval = (self.V.evaluator(exact=True) if isinstance(self.V, FeatureValueFunction)
-                             else self.V.evaluator())
+        self._online_eval = (self.V.evaluator(exact=self.config.rbf_online_value == "kernel")
+                             if isinstance(self.V, FeatureValueFunction) else self.V.evaluator())
 
     # ------------------------------------------------------------------------------------
     # Index <-> metric conversions (starter API)
@@ -247,18 +274,33 @@ class GPI:
         return mx, my, mth
 
     def collision_risk(self, px, py):
-        """P(next position outside F) under N(0, sig_risk^2 I) noise (half-plane approximation)."""
+        """Next-state risk. The new mode integrates each disjoint disk exactly in 2D."""
         sig = self.sig_risk
         m = self.config.collision_margin
-        p_free = torch.ones_like(px)
-        for i in range(self.obs.shape[0]):
-            cx, cy, r = self.obs[i]
-            d = torch.sqrt((px - cx) ** 2 + (py - cy) ** 2) - (r + C.ROBOT_RADIUS + m)
-            p_free = p_free * (1 - torch.special.ndtr(-d / sig))
         W = C.WORKSPACE
-        p_oob = (torch.special.ndtr(-(W - px) / sig) + torch.special.ndtr(-(W + px) / sig)
-                 + torch.special.ndtr(-(W - py) / sig) + torch.special.ndtr(-(W + py) / sig))
-        return torch.clamp(1 - p_free + p_oob, max=1.0)
+        if self.config.risk_mode == "independent_halfplane":
+            p_free = torch.ones_like(px)
+            for i in range(self.obs.shape[0]):
+                cx, cy, r = self.obs[i]
+                d = torch.sqrt((px - cx) ** 2 + (py - cy) ** 2) - (r + C.ROBOT_RADIUS + m)
+                p_free = p_free * (1 - torch.special.ndtr(-d / sig))
+            p_oob = (torch.special.ndtr(-(W - px) / sig) + torch.special.ndtr(-(W + px) / sig)
+                     + torch.special.ndtr(-(W - py) / sig) + torch.special.ndtr(-(W + py) / sig))
+            return torch.clamp(1 - p_free + p_oob, max=1.0)
+        p_obs = torch.zeros_like(px)
+        for i in range(self.obs.shape[0]):
+            cx, cy, _ = self.obs[i]
+            distance = torch.sqrt((px - cx) ** 2 + (py - cy) ** 2)
+            table = self.risk_lookup[i]
+            frac = (distance / self.risk_lookup_step).clamp(0, len(table) - 1)
+            lo = frac.long().clamp(max=len(table) - 2)
+            p_obs = p_obs + table[lo] + (frac - lo) * (table[lo + 1] - table[lo])
+        p_inside_x = torch.special.ndtr((W - px) / sig) - torch.special.ndtr((-W - px) / sig)
+        p_inside_y = torch.special.ndtr((W - py) / sig) - torch.special.ndtr((-W - py) / sig)
+        p_oob = 1 - p_inside_x * p_inside_y
+        # Disk events are disjoint. The disk / out-of-bounds intersection is still
+        # approximated here; it is negligible in the narrow corridors studied below.
+        return torch.clamp(p_obs + (1 - p_obs) * p_oob, 0.0, 1.0)
 
     def q_backup(self, tt, E, U, value_fn):
         """Q(t, e, u) = l(t, e, u) + gamma * E_w V(t+1, g(t, e, u, w)).
@@ -389,6 +431,8 @@ class GPI:
         d = np.load(path, allow_pickle=False)
         meta = json.loads(str(d["meta"]))
         cfg = dict(meta["config"])
+        cfg.setdefault("risk_mode", "independent_halfplane")
+        cfg.setdefault("rbf_online_value", "kernel")
         cfg.update(device=device, **overrides)
         for k in ("obstacles", "ex_space", "ey_space", "eth_space", "v_space", "w_space", "Q", "R"):
             cfg[k] = np.asarray(cfg[k])

@@ -3,7 +3,18 @@ __pycache__/
 # large, regenerable artifacts
 starter_code/results/models/
 starter_code/results/*.pkl
+starter_code/results/logs/revised_*.log
+starter_code/results/logs/rbf_evaluator_ablation.log
 starter_code/fig/animation*.gif
-# course handout (not redistributed) and blog build sources (published in jnsungp.github.io)
+# course handout (not redistributed) and unrelated blog build files
 *.pdf
-blog_build/
+blog_build/**
+!blog_build/blog/
+blog_build/blog/**
+!blog_build/blog/safe-trajectory-tracking/
+blog_build/blog/safe-trajectory-tracking/**
+!blog_build/blog/safe-trajectory-tracking/index.html
+!blog_build/blog/safe-trajectory-tracking/post.css
+!blog_build/blog/safe-trajectory-tracking/assets/
+blog_build/blog/safe-trajectory-tracking/assets/**
+!blog_build/blog/safe-trajectory-tracking/assets/revised_*.png

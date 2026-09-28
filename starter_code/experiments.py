@@ -1,4 +1,4 @@
-"""Hypothesis-testing experiments for CEC vs tabular GPI vs RBF GPI.
+"""Experiments for CEC vs tabular GPI vs RBF GPI.
 
     python experiments.py train  --models grid_medium_k1 rbf_medium_k1 ...   (GPU, offline GPI)
     python experiments.py rollout --suite main|grid|rbf|pilot_margin|pilot_lambda (CPU, multiprocess)
@@ -55,6 +55,27 @@ def model_specs():
     specs["grid_medium_k0_risk4cm"] = dict(value_type="grid", grid="medium", noise_scale=0.0, risk_sigma=0.04)
     specs["rbfavg_smooth_k1"] = dict(value_type="rbf", grid="medium", noise_scale=1.0, rbf_fit="avg",
                                      rbf_stride_t=2, rbf_stride_e=3, rbf_ls_t=1.6, rbf_ls_e=3.0)
+    # Revised experiment: exact 2-D disk probabilities and a consistent RBF evaluator.
+    for k in NOISE_LEVELS:
+        kn = _kname(k)
+        specs[f"revised_grid_medium_{kn}"] = dict(value_type="grid", grid="medium", noise_scale=k,
+                                                  risk_mode="exact_disks")
+        specs[f"revised_rbfavg_medium_{kn}"] = dict(value_type="rbf", grid="medium", noise_scale=k,
+                                                    risk_mode="exact_disks", rbf_fit="avg",
+                                                    rbf_online_value="interpolated", rbf_stride_t=1,
+                                                    rbf_stride_e=2, rbf_ls_t=0.8, rbf_ls_e=1.6)
+    specs["revised_grid_medium_k1_risk1cm"] = dict(value_type="grid", grid="medium", noise_scale=1.0,
+                                                     risk_sigma=0.01, risk_mode="exact_disks")
+    specs["revised_grid_medium_k0_risk4cm"] = dict(value_type="grid", grid="medium", noise_scale=0.0,
+                                                     risk_sigma=0.04, risk_mode="exact_disks")
+    for lam in (10, 100, 10000):
+        specs[f"revised_grid_medium_k1_lam{lam}"] = dict(value_type="grid", grid="medium",
+                                                          noise_scale=1.0, risk_mode="exact_disks",
+                                                          collision_penalty=float(lam))
+    for name, spec in specs.items():
+        if not name.startswith("revised_"):
+            spec.setdefault("risk_mode", "independent_halfplane")
+            spec.setdefault("rbf_online_value", "kernel")
     return specs
 
 
@@ -76,7 +97,10 @@ def train(names, num_iters=20, tol=0.05, max_gpu_gb=4.0):
         cfg = GpiConfig(ex_space=pgrid, ey_space=pgrid, eth_space=theta_grid(nth), device="cuda", **s)
         print(f"[train] {name}: states={100 * len(pgrid) ** 2 * nth:,} {s}", flush=True)
         gpi = GPI(cfg)
-        gpi.compute_policy(num_iters=num_iters, tol=tol)
+        # The high-risk-penalty policy needs a few more updates to meet the same
+        # value-change tolerance used by the other revised models.
+        model_iters = max(num_iters, 30) if name == "revised_grid_medium_k1_lam10000" else num_iters
+        gpi.compute_policy(num_iters=model_iters, tol=tol)
         gpi.save(out)
         print(f"[done] {name}: offline={gpi.offline_sec:.1f}s peak_gpu={gpi.peak_gpu_mb:.0f}MB "
               f"params={gpi.V.n_params():,}", flush=True)
@@ -102,7 +126,9 @@ def make_controller(spec):
         import torch
         torch.set_num_threads(1)
         from gpi import GPI
-        ctrl = GPI.load(os.path.join(MODELS_DIR, f"{spec[1]}.npz"), device="cpu", online_mode=spec[2])
+        overrides = spec[3] if len(spec) > 3 else {}
+        ctrl = GPI.load(os.path.join(MODELS_DIR, f"{spec[1]}.npz"), device="cpu",
+                        online_mode=spec[2], **overrides)
     _CACHE[key] = ctrl
     return ctrl
 
@@ -123,6 +149,31 @@ def suite(name, levels=None):
                 ("RBF-LS", ("GPI", f"rbf_medium_{kn}", "lookahead"), k, sd),
                 ("GPI-detmodel", ("GPI", "grid_medium_k0", "lookahead"), k, sd),
             ]
+    elif name == "revised":
+        for k in (levels if levels is not None else NOISE_LEVELS):
+            sd = [0] if k == 0 else seeds
+            kn = _kname(k)
+            runs += [
+                ("CEC", ("CEC", {"horizon": 10}), k, sd),
+                ("GPI", ("GPI", f"revised_grid_medium_{kn}", "lookahead"), k, sd),
+                ("RBF", ("GPI", f"revised_rbfavg_medium_{kn}", "lookahead"), k, sd),
+            ]
+    elif name == "revised_ablation":
+        runs += [("T-noise+risk4cm", ("GPI", "revised_grid_medium_k1", "lookahead"), 1.0, seeds),
+                 ("T-noise+risk1cm", ("GPI", "revised_grid_medium_k1_risk1cm", "lookahead"), 1.0, seeds),
+                 ("T-det+risk4cm", ("GPI", "revised_grid_medium_k0_risk4cm", "lookahead"), 1.0, seeds),
+                 ("T-det+risk1cm", ("GPI", "revised_grid_medium_k0", "lookahead"), 1.0, seeds)]
+    elif name == "rbf_evaluator_ablation":
+        for k in (0.5, 1.0):
+            kn = _kname(k)
+            runs.append(("RBF-legacy-kernel", ("GPI", f"rbfavg_medium_{kn}", "lookahead"), k, seeds))
+            runs.append(("RBF-legacy-interpolated",
+                         ("GPI", f"rbfavg_medium_{kn}", "lookahead",
+                          {"rbf_online_value": "interpolated"}), k, seeds))
+    elif name == "revised_lambda":
+        runs.append(("GPI-lam1000", ("GPI", "revised_grid_medium_k1", "lookahead"), 1.0, seeds))
+        for lam in (10, 100, 10000):
+            runs.append((f"GPI-lam{lam}", ("GPI", f"revised_grid_medium_k1_lam{lam}", "lookahead"), 1.0, seeds))
     elif name == "grid":
         for g in ("coarse", "medium", "fine"):
             runs.append((f"GPI-{g}", ("GPI", f"grid_{g}_k1", "lookahead"), 1.0, seeds))
@@ -180,18 +231,26 @@ def _init_worker():
     os.environ["MKL_NUM_THREADS"] = "1"
 
 
-def timing(n_eps=3):
+def timing(n_eps=3, revised=False):
     """Online per-step control time measured in a single process (no CPU contention)."""
     import torch
     torch.set_num_threads(1)
-    specs = [
-        ("CEC N=10", ("CEC", {"horizon": 10})),
-        ("CEC N=20", ("CEC", {"horizon": 20})),
-        ("GPI lookahead (medium)", ("GPI", "grid_medium_k1", "lookahead")),
-        ("GPI lookup (medium)", ("GPI", "grid_medium_k1", "lookup")),
-        ("RBF lookahead (exact kernel)", ("GPI", "rbfavg_medium_k1", "lookahead")),
-        ("GPI lookahead (fine)", ("GPI", "grid_fine_k1", "lookahead")),
-    ]
+    if revised:
+        specs = [
+            ("CEC N=10", ("CEC", {"horizon": 10})),
+            ("GPI lookahead", ("GPI", "revised_grid_medium_k1", "lookahead")),
+            ("GPI lookup", ("GPI", "revised_grid_medium_k1", "lookup")),
+            ("RBF lookahead", ("GPI", "revised_rbfavg_medium_k1", "lookahead")),
+        ]
+    else:
+        specs = [
+            ("CEC N=10", ("CEC", {"horizon": 10})),
+            ("CEC N=20", ("CEC", {"horizon": 20})),
+            ("GPI lookahead (medium)", ("GPI", "grid_medium_k1", "lookahead")),
+            ("GPI lookup (medium)", ("GPI", "grid_medium_k1", "lookup")),
+            ("RBF lookahead (exact kernel)", ("GPI", "rbfavg_medium_k1", "lookahead")),
+            ("GPI lookahead (fine)", ("GPI", "grid_fine_k1", "lookahead")),
+        ]
     out = []
     for label, spec in specs:
         if spec[0] == "GPI" and not os.path.exists(os.path.join(MODELS_DIR, f"{spec[1]}.npz")):
@@ -205,7 +264,7 @@ def timing(n_eps=3):
         ts = np.array(ts)
         out.append(dict(controller=label, ms_mean=ts[:, 0].mean(), ms_p95=ts[:, 1].mean(), ms_max=ts[:, 2].max()))
         print(out[-1], flush=True)
-    with open(os.path.join(RESULTS, "timing.json"), "w") as fh:
+    with open(os.path.join(RESULTS, "revised_timing.json" if revised else "timing.json"), "w") as fh:
         json.dump(out, fh, indent=1)
 
 
@@ -239,7 +298,7 @@ def offline_timing(n_iters=2):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["train", "rollout", "timing", "offline_timing", "list"])
+    ap.add_argument("cmd", choices=["train", "rollout", "timing", "timing_revised", "offline_timing", "list"])
     ap.add_argument("--models", nargs="*", default=[])
     ap.add_argument("--suite", default="main")
     ap.add_argument("--workers", type=int, default=28)
@@ -253,6 +312,8 @@ if __name__ == "__main__":
         run_suite(a.suite, a.workers, a.levels, a.tag)
     elif a.cmd == "timing":
         timing()
+    elif a.cmd == "timing_revised":
+        timing(revised=True)
     elif a.cmd == "offline_timing":
         offline_timing()
     else:

@@ -1,5 +1,7 @@
 # CEC vs Tabular GPI vs RBF GPI — 가설 검증 리포트
 
+> **초기 실험 기록.** 이후 코드 리뷰에서 GPI의 장애물 위험확률 합산과 RBF의 학습·온라인 값 평가 방식 차이를 발견해 모델을 재학습했다. 최신 결과와 첫 충돌 기준 분석은 [`starter_code/results/revised_summary.json`](starter_code/results/revised_summary.json) 및 [수정 블로그 글](blog_build/blog/safe-trajectory-tracking/index.html)에 있다. 아래 수치는 초기 구현의 재현 기록으로 남긴다.
+
 ECE276B PR3(무한 지평 확률적 최적제어, differential-drive 궤적 추종)를 starter code에서 다시 구현했다. 그 위에서 사전에 세운 가설 5개를 **같은 simulator, 같은 cost, 같은 noise seed(common random numbers)** 조건으로 검증한 기록이다. 모든 수치는 원자료에서 다시 계산해 독립 검증 에이전트 5개가 교차 확인했다.
 
 - 코드: [`starter_code/`](starter_code/) · 집계: [`summary.json`](starter_code/results/summary.json), [`extra_stats.json`](starter_code/results/extra_stats.json) · 그림: [`starter_code/results/figs/`](starter_code/results/figs/)

@@ -133,7 +133,7 @@ def noise_sequence(seed, n_steps=N_STEPS, noise_scale=1.0):
 
 
 def rollout(controller, noise_scale=1.0, seed=0, n_steps=N_STEPS, x0=X_INIT, cp: CostParams = COST,
-            keep_traj=False):
+            keep_traj=False, start_t=0):
     """Run one closed-loop episode on the numerical simulator (eq. 1) and return metrics.
 
     controller(t, cur_state, cur_ref_state) -> [v, w]  (same signature as the starter code)
@@ -144,12 +144,13 @@ def rollout(controller, noise_scale=1.0, seed=0, n_steps=N_STEPS, x0=X_INIT, cp:
     if hasattr(controller, "reset"):
         controller.reset()
     for t in range(n_steps):
-        r = ref(t)
+        absolute_t = start_t + t
+        r = ref(absolute_t)
         tic = perf_counter()
-        u = np.asarray(controller(t, x.copy(), r.copy()), dtype=float).reshape(2)
+        u = np.asarray(controller(absolute_t, x.copy(), r.copy()), dtype=float).reshape(2)
         ctimes.append(perf_counter() - tic)
         u = np.clip(u, U_LB, U_UB)
-        es.append(error_state(t, x))
+        es.append(error_state(absolute_t, x))
         us.append(u)
         x = f(x, u, W[t])
         xs.append(x.copy())
@@ -161,12 +162,17 @@ def rollout(controller, noise_scale=1.0, seed=0, n_steps=N_STEPS, x0=X_INIT, cp:
     clr = clearance(xs)  # includes x_0 ... x_N
     oob = np.any(np.abs(xs[:, :2]) > WORKSPACE, axis=1)
     coll = clr < 0.0
+    first_hit = int(np.flatnonzero(coll)[0]) if coll.any() else -1
+    # A collision is absorbing for the safety analysis, even though the simulator
+    # continues to generate a full trajectory for tracking diagnostics.
+    observed_safe_steps = min(first_hit, n_steps) if first_hit >= 0 else n_steps
     # starter main.py metric (error of x_{t+1} against r_t, summed) for comparability
-    st_err = xs[1:] - ref(np.arange(n_steps))
+    st_err = xs[1:] - ref(start_t + np.arange(n_steps))
     st_err[:, 2] = wrap(st_err[:, 2])
 
     out = dict(
         seed=seed,
+        start_t=start_t,
         noise_scale=noise_scale,
         mean_pos_err=pos_err.mean(),
         rmse_pos=np.sqrt((pos_err ** 2).mean()),
@@ -175,7 +181,11 @@ def rollout(controller, noise_scale=1.0, seed=0, n_steps=N_STEPS, x0=X_INIT, cp:
         mean_stage_cost=ell.mean(),
         collided=bool(coll.any()),
         n_coll_steps=int(coll.sum()),
-        first_coll_t=int(np.argmax(coll)) if coll.any() else -1,
+        first_coll_t=first_hit,
+        safe_steps_until_hit=observed_safe_steps,
+        hit_by_step_100=bool(coll[:101].any()),
+        hit_by_step_200=bool(coll[:201].any()),
+        pre_hit_stage_cost=float(ell[:observed_safe_steps].mean()) if observed_safe_steps else np.nan,
         min_clearance=clr.min(),
         oob=bool(oob.any()),
         ctrl_ms_mean=1e3 * ctimes.mean(),
