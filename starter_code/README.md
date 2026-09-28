@@ -24,14 +24,15 @@ It prints tracking errors in the starter's format, the mean control time, and th
 | `value_function.py` | `GridValueFunction` (tabular) and `FeatureValueFunction` (Gaussian RBF with an exact Kronecker ridge LS fit, or a normalized-kernel averager) |
 | `experiments.py` | model zoo (`train`), rollout suites (`rollout --suite main/grid/rbf/pilot_margin/pilot_lambda/ablation2x2`), `timing`, `offline_timing` |
 | `analyze.py`, `extra_stats.py` | statistics (Wilson CIs, paired Wilcoxon, exact McNemar) and figures in `results/figs/` |
-| `make_media.py` | side-by-side rollout GIFs |
+| `blog_figs.py` | figures and GIF for the blog post |
+| `make_media.py` | side-by-side rollout GIFs (first round of experiments) |
 | `utils.py`, `mujoco_car.py`, `mujoco_assets/` | starter code: reference trajectory, visualization, MuJoCo car |
 
 Trained GPI/RBF models are written to `results/models/*.npz` by `python experiments.py train --models ...`. That step needs a CUDA GPU; the online controllers run on CPU.
 
-## Revised results-first study
+## Main experiment
 
-The revised experiment uses the exact 2-D Gaussian probability of entering each inflated circular obstacle. Because the four inflated disks are disjoint, their probabilities add. A 0.5 mm distance lookup keeps this calculation fast on the GPU; combining obstacle and workspace events remains approximate near the outer boundary. RBF online lookahead uses the same rendered-value interpolation as its offline Bellman backup. The old model names and `report.md` remain available as the original experiment record.
+GPI's risk term uses the exact 2-D Gaussian probability of entering each inflated circular obstacle. Because the four inflated disks do not overlap, their probabilities add; a 0.5 mm distance lookup keeps the calculation fast on the GPU. The union with the workspace boundary is approximate where an obstacle extends past the square. RBF online lookahead evaluates the value function exactly as the offline Bellman backup does. Models whose names start with `revised_` belong to this experiment.
 
 ```bash
 python test_revised_risk.py
@@ -39,11 +40,10 @@ python experiments.py train --models $(python experiments.py list | rg '^revised
 python experiments.py rollout --suite revised
 python experiments.py rollout --suite revised_ablation
 python experiments.py rollout --suite revised_lambda
-python experiments.py rollout --suite rbf_evaluator_ablation
 python phase_robustness.py
 python experiments.py timing_revised
 python revised_analysis.py
-python revised_figs.py
+python blog_figs.py
 ```
 
-The main 200-seed rollouts are in `results/rollouts_revised*.pkl` (ignored by Git); the reviewable aggregate is `results/revised_summary.json`. The phase experiment aligns the initial state with the reference at phases 0, 25, 50 and 75, and runs exactly two periods from each phase.
+The 200-seed rollouts are written to `results/rollouts_revised*.pkl` (not committed); the aggregate is `results/revised_summary.json`. The phase experiment starts the robot on the reference at phases 0, 25, 50 and 75 and runs exactly two periods from each.

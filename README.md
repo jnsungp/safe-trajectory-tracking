@@ -1,48 +1,55 @@
 # Safe Trajectory Tracking under Motion Uncertainty
 
-**Revised article:** [Tracking Through a Five-Centimeter Gap](blog_build/blog/safe-trajectory-tracking/index.html) · **Revised results:** [revised_summary.json](starter_code/results/revised_summary.json) · **Original report (Korean):** [report.md](report.md)
+**Blog post:** https://jnsungp.github.io/blog/safe-trajectory-tracking/ · **Aggregate results:** [`starter_code/results/revised_summary.json`](starter_code/results/revised_summary.json)
 
-This repository extends [UCSD ECE 276B Project 3](https://natanaso.github.io/ece276b/). A differential-drive robot tracks a figure-eight reference around four circular obstacles under Gaussian motion noise. The experiment compares a ten-step certainty-equivalent controller (CEC), tabular generalized policy iteration (GPI), and GPI with a compressed RBF value function. The controllers share the simulator but use different optimization objectives and noise information.
+This repository continues my project from [UCSD ECE 276B: Planning & Learning in Robotics](https://natanaso.github.io/ece276b/) (Project 3). A differential-drive robot tracks a figure-eight reference around four circular obstacles under Gaussian motion noise. The experiment compares three controllers that share the simulator but use different objectives and noise information:
 
-## Revised experiment
+| method | idea |
+|---|---|
+| **CEC** | ten-step CasADi/IPOPT NLP with the noise set to zero, re-solved every step |
+| **Tabular GPI** | 3.36 M-state discretized MDP solved on the GPU; exact 2-D Gaussian collision probability for each inflated obstacle |
+| **RBF GPI** | the same backups with a 450 k-weight Gaussian-RBF value function (normalized-kernel averager) |
 
-The code review found that the original GPI multiplied obstacle-free probabilities even though the inflated obstacle disks are disjoint. The revised code uses the exact two-dimensional Gaussian probability for each disk and adds those probabilities. It also makes RBF's online value evaluation match the interpolation used while training, and reports the first sampled collision rather than relying only on full-trajectory collision counts and tracking cost.
+## Main results (200 paired seeds per noise level)
 
-The main comparison uses 200 paired noise seeds at each nonzero noise level. At noise ×1, sampled collisions occur in 200/200 CEC episodes, 83/200 revised tabular GPI episodes, and 183/200 revised RBF GPI episodes. Mean steps to the first collision, capped at 240, are 24, 190, and 102. At noise ×2, tabular GPI avoids the narrow corridors and has fewer collisions than at ×1: 20.5% versus 41.5%, with more tracking error.
-
-The original [report.md](report.md) records the earlier implementation and remains available for comparison. Its numerical results should not be mixed with the revised results.
+- The inflated obstacles leave a **5.1 cm gap**, and the reference passes *inside* two of them. The results are about how each controller handles that gap.
+- **CEC** tracks most closely (9.6 cm at noise ×1) but collides in 100% of noisy episodes, on average after 24 steps: its optimum sits on an active constraint.
+- **Tabular GPI** collides in 0%, 5.5%, 41.5% and 20.5% of episodes at noise ×0.25, ×0.5, ×1 and ×2. At high noise it detours around the gap, at the cost of tracking error.
+- A 2×2 ablation at noise ×1 shows that GPI's margin comes from the **calibrated collision probability**, not from the Gaussian transition in the Bellman backup (41.5% vs 38.5% collisions with and without transition noise, p = 0.53).
+- **RBF GPI** stores 7.5× fewer parameters and collides far more often (44.5% vs 5.5% at ×0.5). A plain least-squares RBF fit converges to a value function that is negative on 76% of states, even though every cost is non-negative.
+- The ordering holds from four different starting phases of the reference.
 
 ## Code
 
-| File | Purpose |
+| file | purpose |
 |---|---|
-| [common.py](starter_code/common.py) | Dynamics, cost, geometry, paired-noise rollout, first-hit metrics |
-| [cec.py](starter_code/cec.py) | Multiple-shooting CEC with IPOPT |
-| [gpi.py](starter_code/gpi.py) | GPU GPI, corrected disk risk, online control |
-| [value_function.py](starter_code/value_function.py) | Tabular and RBF value functions |
-| [experiments.py](starter_code/experiments.py) | Model specifications, training, rollouts, timing |
-| [phase_robustness.py](starter_code/phase_robustness.py) | Two-period tests from four aligned starting phases |
-| [revised_analysis.py](starter_code/revised_analysis.py) | Aggregate statistics and paired comparisons |
-| [revised_figs.py](starter_code/revised_figs.py) | Figures for the revised article |
+| [`common.py`](starter_code/common.py) | dynamics, cost, geometry, paired-noise rollout, first-collision metrics |
+| [`cec.py`](starter_code/cec.py) | multiple-shooting CEC with IPOPT |
+| [`gpi.py`](starter_code/gpi.py) | GPU GPI: on-the-fly transitions, collision-risk term, online control |
+| [`value_function.py`](starter_code/value_function.py) | tabular and RBF value functions |
+| [`experiments.py`](starter_code/experiments.py) | model specifications, training, rollout suites, timing |
+| [`phase_robustness.py`](starter_code/phase_robustness.py) | two-period runs from four aligned starting phases |
+| [`revised_analysis.py`](starter_code/revised_analysis.py) | aggregate statistics and paired tests |
+| [`blog_figs.py`](starter_code/blog_figs.py) | figures and GIF for the blog post |
 
 ## Reproduce
 
 ```bash
 conda env create -f environment.yml && conda activate traj
 cd starter_code
-python test_revised_risk.py
-python experiments.py train --models $(python experiments.py list | rg '^revised_')  # CUDA GPU
+python test_revised_risk.py                                                        # checks of the collision-risk term
+python experiments.py train --models $(python experiments.py list | rg '^revised_')  # CUDA GPU, a few minutes per model
 python experiments.py rollout --suite revised
 python experiments.py rollout --suite revised_ablation
 python experiments.py rollout --suite revised_lambda
-python experiments.py rollout --suite rbf_evaluator_ablation
 python phase_robustness.py
 python experiments.py timing_revised
-python revised_analysis.py && python revised_figs.py
+python revised_analysis.py && python blog_figs.py
+python main.py --controller cec                                                    # single-episode demo (also gpi / rbf / p)
 ```
 
-The revised model files in `results/models/` and raw `results/*.pkl` rollouts are ignored by Git. The aggregate JSON, figures, article, and code are included in the working tree. The original code paths and model names remain usable to reproduce the archived report.
+Trained models (`results/models/`) and raw rollouts (`results/*.pkl`) are not committed; the commands above regenerate them. `report.md` holds my earlier Korean notes on this project from a first round of experiments with a simpler risk approximation; the blog post and the numbers above come from `results/revised_summary.json`.
 
 ## Acknowledgments
 
-Built on the ECE 276B starter code (Nikolay Atanasov, UC San Diego). The initial implementation used Claude Code; the corrected rerun and article revision used Codex. Rollout statistics are regenerated by `revised_analysis.py`; timing and geometric checks have separate scripts.
+Built on the ECE 276B starter code (Nikolay Atanasov, UC San Diego). The implementation and experiments were done with the help of AI coding assistants (Claude Code and Codex).

@@ -3,150 +3,269 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tracking Through a Five-Centimeter Gap</title>
+<title>Safe Trajectory Tracking under Motion Uncertainty</title>
 <meta name="author" content="Junsung Park">
-<meta name="description" content="A corrected and repeated experiment comparing CEC, tabular GPI, and RBF GPI on noisy trajectory tracking, with first-collision analysis.">
+<meta name="description" content="CEC, tabular GPI and RBF GPI on a noisy trajectory-tracking task with a five-centimeter gap between obstacles: collision rates, first contact, and where the safety margin comes from.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Lato:ital,wght@0,300;0,400;0,700;1,400&family=Source+Code+Pro&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:ital,wght@0,300;0,400;0,600;0,700;1,400&family=Source+Code+Pro&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="post.css">
+<script>
+  window.MathJax = { tex: { inlineMath: [["\\(", "\\)"]], displayMath: [["\\[", "\\]"]] } };
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 </head>
 <body>
 <main>
+
 <div class="topnote">
-  A continuation of my project from <a href="https://natanaso.github.io/ece276b/">UCSD ECE 276B: Planning &amp; Learning in Robotics</a>
-  &nbsp;·&nbsp; <a href="../../">Home</a> &nbsp;·&nbsp;
+  This post documents how I kept developing my project from
+  <a href="https://natanaso.github.io/ece276b/">UCSD ECE 276B: Planning &amp; Learning in Robotics</a>
+  after taking the course. &nbsp;·&nbsp; <a href="../../">Home</a> &nbsp;·&nbsp;
   <a href="https://github.com/jnsungp/safe-trajectory-tracking">Code and data</a>
 </div>
 
-<h1 class="title">Tracking Through a Five-Centimeter Gap</h1>
-<div class="byline"><a href="https://jnsungp.github.io/">Junsung Park</a><br>September 2026 · revised experiment</div>
+<h1 class="title">Safe Trajectory Tracking under Motion Uncertainty</h1>
+<div class="byline"><a href="https://jnsungp.github.io/">Junsung Park</a><br>September 2026</div>
 
 <p>
-  A differential-drive robot has to follow a figure-eight past four circular obstacles. Its commanded motion is deterministic; every half-second, Gaussian noise perturbs its position and heading. I compared a ten-step certainty-equivalent controller (CEC), a tabular generalized-policy-iteration controller (GPI), and GPI with a compressed radial-basis-function value function (RBF GPI).
+  A differential-drive robot has to follow a figure-eight past four circular obstacles.
+  Its commands are deterministic, but every half-second Gaussian noise pushes its position and heading off the predicted path.
+  I compared three controllers for this task: a ten-step <b>certainty-equivalent controller (CEC)</b> that replans with the noise set to zero, <b>tabular generalized policy iteration (GPI)</b> on a discretized MDP, and <b>GPI with a compressed radial-basis-function (RBF) value function</b>.
 </p>
 <p>
-  I reran the experiment after reviewing the implementation. The earlier GPI code understated collision risk in the narrow gap between two obstacles, and RBF used different value evaluations while training and controlling the robot. I corrected both, retrained the affected models, and analyzed the <em>first collision</em> as well as the full trajectory. The main ranking survived; several numbers and the interpretation of safety became more precise.
+  The short version: CEC tracks the reference most closely and collides in every noisy episode.
+  Tabular GPI tracks less closely but keeps a margin sized to the noise, and at high noise it takes a longer route around the tightest gap.
+  The RBF version saves memory and loses most of that safety.
+  The environment turns out to contain a five-centimeter gap that the reference drives straight through, and most of the story is about how each method handles that gap.
 </p>
 
-<h2>The result in one view</h2>
+<h2>The setup</h2>
 <p>
-  The table reports the fraction of 200 episodes that touch an inflated obstacle at a sampled state. Each method sees the same noise draws for a given seed; GPI and RBF are trained separately for each tested noise scale. The noise-free case is one deterministic run, so it is left out of this table.
+  The robot state is \(x_t = (p_t, \theta_t)\) and the control is \(u_t = (v_t, \omega_t) \in [0.1, 1] \times [-1, 1]\).
+  The kinematics are integrated exactly over \(\Delta = 0.5\) s, then noise \(w_t \sim \mathcal N(0, \mathrm{diag}(\sigma)^2)\) with \(\sigma = (0.04, 0.04, 0.004)\) is added.
+  With the tracking error \(e_t = (p_t - r_t,\ \theta_t - \alpha_t)\), the objective is
 </p>
-<div class="table-wrap"><table>
-  <tr><th>Noise scale</th><th>CEC hit</th><th>Tabular GPI hit</th><th>RBF GPI hit</th><th>GPI mean steps to first hit*</th></tr>
-  <tr><td>×0.25</td><td>100%</td><td><b>0%</b></td><td>4%</td><td>240</td></tr>
-  <tr><td>×0.5</td><td>100%</td><td><b>5.5%</b></td><td>44.5%</td><td>235</td></tr>
-  <tr><td>×1</td><td>100%</td><td><b>41.5%</b></td><td>91.5%</td><td>190</td></tr>
-  <tr><td>×2</td><td>100%</td><td><b>20.5%</b></td><td>100%</td><td>219</td></tr>
-</table></div>
-<p class="footnote">*Capped at the 240-step episode length. Zero hits in 200 episodes has a Wilson 95% upper bound of about 1.9%; it is an observation, not a safety guarantee.</p>
+\[
+V^*(\tau, e) = \min_\pi \ \mathbb E \Big[\sum_{t \ge \tau} \gamma^{t-\tau} \big(\tilde p_t^\top Q \tilde p_t + q (1-\cos\tilde\theta_t)^2 + u_t^\top R u_t\big)\Big]
+\quad \text{s.t.}\ \ \tilde p_t + r_t \in \mathcal F ,
+\]
+<p>
+  where \(\mathcal F\) is the square \([-3,3]^2\) minus the obstacles inflated by the robot radius (0.5 + 0.3 = 0.8 m).
+  Every method uses \(Q = 10 I\), \(q = 10\), \(R = 0.1 I\) and \(\gamma = 0.95\).
+  I scale the noise by \(k \in \{0, 0.25, 0.5, 1, 2\}\) and run 200 episodes of 240 steps at each non-zero level.
+  For a given seed, every controller sees exactly the same noise draws, so all comparisons are paired.
+  GPI and RBF are trained separately for each noise level, with that level's noise model.
+  A collision means a sampled robot position inside an inflated obstacle.
+</p>
+
+<details>
+  <summary>How each controller works</summary>
+  <div>
+    <p><b>CEC.</b> A ten-step multiple-shooting NLP solved by IPOPT at every step, with the noise set to zero. The obstacle constraints \(\|p_k - c_i\|^2 + s_{ik} \ge 0.8^2\) use slack variables with an exact L1 penalty, so the problem stays solvable after noise has pushed the robot inside an obstacle. The NLP is built once, and each solve is warm-started from the previous solution.</p>
+    <p><b>Tabular GPI.</b> The grid has 100 time steps × 29 × 29 position-error nodes (0.1 m spacing near zero, coarser farther out) × 40 heading nodes, which is 3.36 M states, with 110 controls. For every state–control pair, the next-state mean is combined with a 27-node Gauss–Hermite rule for the noise, and each node spreads its probability over the 8 vertices of its grid cell. Transitions are recomputed on the GPU during every sweep instead of being stored, so training fits in under 1 GB. Collisions enter the stage cost as \(\lambda \cdot P(\text{next position hits an obstacle})\) with \(\lambda = 1000\). Online, the controller does a one-step lookahead from the robot's exact continuous state.</p>
+    <p><b>Collision probability.</b> For one obstacle, the probability that the next position lands inside the inflated disk is a non-central \(\chi^2\) CDF. The four inflated disks do not overlap, so their probabilities add exactly; a 0.5 mm lookup table keeps this fast on the GPU. The additive form matters in the gap: a noisy landing can hit the disk on either side. Treating the disks as independent events would put the one-step risk at the gap center at 45.7% instead of 51.0% (noise ×1).</p>
+    <p><b>RBF GPI.</b> Gaussian kernels sit on a sub-lattice of the grid, giving 450 k weights (7.5× fewer than the table). The fit is a normalized-kernel averager, which keeps the projected Bellman operator a contraction. The controller evaluates the value function exactly as the Bellman backup does during training.</p>
+  </div>
+</details>
+
+<h2>A five-centimeter gap</h2>
+<p>
+  Before running any controller, I checked the geometry. The reference itself passes <b>inside</b> the inflated obstacles C1 and C2, so perfect tracking means collision.
+  Worse, the gap between inflated C1 and inflated C3 is only <b>5.1 cm</b>, and C2 and C4 leave the same gap.
+  At noise ×1, a single sample at the middle of that gap collides with probability 51%.
+  A controller has two options: keep some margin inside the gap, or leave the reference and take a longer route around C3.
+</p>
 <figure class="wide">
-  <img class="fig" src="assets/revised_noise_sweep.png" alt="Position error, sampled collision rate, and mean steps to first collision across noise scales">
-  <figcaption>Recomputed from the corrected policies. Shading gives Wilson 95% intervals for collision rates; the noise-free point has no sampling interval.</figcaption>
+  <img class="fig" src="assets/corridor.png" alt="Twenty noisy rollouts of CEC, tabular GPI and RBF GPI near the C1–C3 gap">
+  <figcaption>The right-hand lobe at noise ×1, twenty seeds. Dashed circles are the inflated obstacles, and the dotted curve is the reference. CEC hugs the boundary through the gap, tabular GPI takes the inner route, and RBF GPI goes through the gap with a large tracking error.</figcaption>
+</figure>
+<figure class="wide">
+  <img src="assets/rollout_k1.gif" alt="Animated side-by-side rollouts of CEC, tabular GPI and RBF GPI on the same noise realization">
+  <figcaption>The same noise realization (×1, seed 0) for all three controllers. The white triangle is the reference; the ring around the robot turns bold black while it is in collision.</figcaption>
+</figure>
+
+<h2>Results at a glance</h2>
+<figure>
+<div class="table-wrap"><table class="paper">
+  <thead>
+    <tr><th></th><th class="group" colspan="3">collision rate (%)</th><th class="gap"></th><th class="group" colspan="3">steps until first collision</th></tr>
+    <tr><th>noise</th><th>CEC</th><th class="hl">GPI</th><th>RBF</th><th class="gap"></th><th>CEC</th><th class="hl">GPI</th><th>RBF</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>×0.25</td><td>100</td><td class="hl">0</td><td>4</td><td class="gap"></td><td>28</td><td class="hl">240</td><td>235</td></tr>
+    <tr><td>×0.5</td><td>100</td><td class="hl">5.5</td><td>44.5</td><td class="gap"></td><td>27</td><td class="hl">235</td><td>188</td></tr>
+    <tr><td>×1</td><td>100</td><td class="hl">41.5</td><td>91.5</td><td class="gap"></td><td>24</td><td class="hl">190</td><td>102</td></tr>
+    <tr><td>×2</td><td>100</td><td class="hl">20.5</td><td>100</td><td class="gap"></td><td>19</td><td class="hl">219</td><td>40</td></tr>
+  </tbody>
+</table></div>
+<figcaption>200 paired episodes per cell. Steps until the first collision are averaged with collision-free episodes counted as 240 (the episode length). Zero collisions in 200 episodes still allows a true rate of up to 1.9% (Wilson 95%).</figcaption>
+</figure>
+<figure class="wide">
+  <img class="fig" src="assets/noise_sweep.png" alt="Tracking error, collision rate and steps until first collision across noise scales">
+  <figcaption>Tracking error, collision rate and mean steps until the first collision versus noise scale. Shading shows 95% intervals; noise ×0 is a single deterministic run.</figcaption>
 </figure>
 <p>
-  At noise ×1, CEC tracks most closely (mean position error 0.096 m), followed by tabular GPI (0.279 m) and RBF GPI (0.412 m). But CEC reaches its first obstacle after an average of only 24 steps, versus 190 for tabular GPI and 102 for RBF. These are different dimensions of performance: low tracking error can be achieved by following the reference through an obstacle.
+  At noise ×1, CEC has the lowest tracking error (9.6 cm), ahead of tabular GPI (28 cm) and RBF GPI (41 cm).
+  But CEC reaches an obstacle after 24 steps on average, while tabular GPI lasts 190 steps and RBF 102.
+  Low tracking error and safety pull in opposite directions here, because the most accurate way to follow this reference runs through an obstacle.
+</p>
+<p>
+  Without noise, CEC is the most accurate controller (4.7 cm, against 6.5 cm for tabular GPI and 39 cm for RBF), and none of the three touches an obstacle at a sampled state.
+  CEC gets that accuracy by riding the constraint: its sampled clearance is exactly zero, and between two samples the robot's actual arc cuts 1.7 cm into the obstacle.
+  Tabular GPI stays about 3.4 cm clear at the samples and clears the obstacles along the continuous path as well.
 </p>
 
-<h2>Why this course layout is difficult</h2>
+<h2>The first contact</h2>
 <p>
-  The robot has a 0.3 m radius. After inflating the 0.5 m obstacles, the gap between C1 and C3 is only 5.1 cm; C2 and C4 form the same gap. The figure-eight reference passes <em>inside</em> inflated C1 and C2. Perfect tracking is therefore incompatible with avoiding contact. A controller has to leave room within the narrow gap or take a longer route around it.
+  The simulator keeps running after a collision, so the full-episode tracking cost also includes behavior after the safety task has already failed.
+  The time of the <i>first</i> contact is a cleaner safety measure.
 </p>
 <figure class="wide">
-  <img class="fig" src="assets/revised_corridor_k1.png" alt="Twenty corrected-policy trajectories near the right-hand obstacle corridor at noise scale one">
-  <figcaption>Twenty paired seeds at noise ×1. Gray circles show inflated obstacles; the dotted curve is the reference. CEC stays near an obstacle boundary, tabular GPI takes the inner detour, and RBF GPI stays on the corridor route with much larger tracking error.</figcaption>
+  <img class="fig" src="assets/survival.png" alt="Fraction of episodes without a collision over time at noise 0.5 and 1">
+  <figcaption>Fraction of episodes that have not yet collided. Shaded bands mark the times when the reference passes through the inflated C1 and C2.</figcaption>
 </figure>
 <p>
-  In the noise-free run, CEC has the smallest sampled tracking error, 0.047 m. Its sampled path sits at zero obstacle clearance. The exact unicycle arc between two samples cuts 1.7 cm into an inflated obstacle, even though every sampled state passes the constraint. Both revised GPI variants avoid a sampled collision in that deterministic run; the continuous-arc check also finds no collision for them. For noisy episodes, a continuous path is not specified by the discrete noise model, so the sampled collision metric remains the primary result.
+  CEC loses about nine in ten episodes at its very first pass through the gap.
+  Its optimum sits exactly on an active constraint, so symmetric noise pushes it across about half the time, however small the noise is.
+  At noise ×0.25, where CEC and tabular GPI take the same route through every gap, the median minimum clearance is −1.7 cm for CEC and +2.1 cm for GPI; the collision rates are 100% and 0%.
+  RBF survives the first gap more often than CEC but keeps losing episodes at every later pass.
+  Tabular GPI loses episodes mainly at the left-hand gap, which it keeps using at noise ×1.
 </p>
 
-<h2>The correction changed the risk calculation, not the overall ranking</h2>
+<h2>Route and margin</h2>
 <p>
-  The earlier risk term multiplied four obstacle-free probabilities, as if contact with different obstacles were independent. The inflated disks here are disjoint. At the midpoint of the narrow gap, a single noisy landing can hit the disk on either side, so those events must be added. I now calculate each disk probability from the exact two-dimensional Gaussian disk distribution and sum them. The 0.5 mm lookup used during training matches the analytic probability at the gap midpoint within 0.0002.
+  The tabular policy changes its route as the noise grows.
+  At noise ×0.5 it goes through every gap on the reference and collides in 5.5% of episodes.
+  At ×1 it takes the inner detour on the right-hand lobe but keeps the left-hand gap, using 40% of the gap passages; it collides in 41.5% of episodes.
+  At ×2 it avoids every gap, and the collision rate <i>falls</i> to 20.5% even though the noise doubled.
+  Its tracking error rises from 9.9 to 28 to 50 cm across those three levels: the safer high-noise policy pays for the detour.
+</p>
+
+<h2>Where GPI's margin comes from</h2>
+<p>
+  Tabular GPI uses the noise model in two places: in the Bellman transition (the expected value over noisy next states) and in the one-step collision probability.
+  To see which one produces the margin, I retrained the noise ×1 policy with each part switched independently and evaluated all four on the same 200 episodes.
 </p>
 <figure>
-  <img class="fig" src="assets/revised_risk_calibration.png" alt="Earlier and corrected estimates of one-step collision probability at the corridor center">
-  <figcaption>At noise ×1 the earlier risk estimate was 45.7%; the corrected disk probability is 51.0%. At noise ×2 they are 61.0% and 71.4%.</figcaption>
-</figure>
-<p>
-  I retrained every main GPI and RBF policy with that correction. Tabular GPI's observed collision rate at noise ×1 moved from 37% to 41.5% (paired exact McNemar p = 0.23). RBF's rate at noise ×0.25 moved from 10% to 4%; that comparison also includes the RBF evaluator fix. The corrected risk is locally different, but retraining does not force a monotone improvement in closed-loop collision rate: a discrete policy can change route or margin at action boundaries.
-</p>
-
-<h2>First contact tells a different story from collision steps</h2>
-<p>
-  The simulator keeps running after a collision. Its full-episode tracking cost and number of steps inside an obstacle remain useful descriptions of that simulated trajectory, but they include behavior after the safety task has already failed. I therefore use the first sampled hit as the main safety endpoint. An episode without a hit contributes all 240 steps to the capped mean time to first hit.
-</p>
-<figure>
-  <img class="fig" src="assets/revised_survival_k1.png" alt="Fraction of episodes without a sampled collision over 240 steps at noise scale one">
-  <figcaption>At noise ×1, CEC loses most episodes at the first corridor encounter. RBF GPI survives that encounter more often but repeatedly loses episodes later. Tabular GPI retains more than half of the episodes through step 240.</figcaption>
-</figure>
-<p>
-  The corrected tabular policy still changes route with noise. At noise ×0.5 it uses every reference corridor passage and hits in 5.5% of episodes. At ×1 it uses 40% of those passages and hits in 41.5%. At ×2 it uses none of them and the hit rate falls to 20.5%, despite larger motion noise. Its mean position error rises from 0.098 to 0.279 to 0.497 m across those three levels. The safer high-noise policy pays for a detour.
-</p>
-
-<h2>What produces GPI's safety margin?</h2>
-<p>
-  The corrected noise ×1 ablation independently changes the noise in the Bellman transition and the noise level used in the one-step obstacle-risk term. Every row below is evaluated on the same 200 noisy episodes.
-</p>
-<div class="table-wrap"><table>
-  <tr><th>Bellman transition</th><th>Risk term σ</th><th>Episodes with a hit</th><th>Mean collision steps</th></tr>
-  <tr><td>Gaussian</td><td>4 cm</td><td>41.5%</td><td>0.51</td></tr>
-  <tr><td>Deterministic</td><td>4 cm</td><td>38.5%</td><td>0.43</td></tr>
-  <tr><td>Gaussian</td><td>1 cm</td><td>97.0%</td><td>3.30</td></tr>
-  <tr><td>Deterministic</td><td>1 cm</td><td>98.5%</td><td>3.74</td></tr>
+<div class="table-wrap"><table class="paper">
+  <thead>
+    <tr><th>Bellman transition</th><th>risk σ</th><th>collision rate (%)</th><th>collision steps</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Gaussian</td><td>4 cm</td><td class="hl">41.5</td><td class="hl">0.51</td></tr>
+    <tr><td>deterministic</td><td>4 cm</td><td class="hl">38.5</td><td class="hl">0.43</td></tr>
+    <tr><td>Gaussian</td><td>1 cm</td><td>97.0</td><td>3.30</td></tr>
+    <tr><td>deterministic</td><td>1 cm</td><td>98.5</td><td>3.74</td></tr>
+  </tbody>
 </table></div>
-<p>
-  Holding the 4 cm risk term fixed, turning transition noise on does not produce a measurable safety gain in this setup (paired p = 0.53). Holding the transition model fixed, using 4 cm rather than 1 cm in the risk term changes the selected route and sharply reduces collisions (paired p &lt; 10<sup>−30</sup>). This result is specific to the current grid, noise levels, layout, and fixed risk penalty. It says which part of this implementation changed its policy; it does not say stochastic transitions never matter.
-</p>
-
-<h2>There is a price for avoiding the gap</h2>
-<p>
-  I also retrained the tabular policy at noise ×1 with four weights on the corrected risk probability. With λ = 10 or 100, it uses every corridor passage and hits in 83.0% or 80.5% of episodes. At λ = 1,000 it takes the inner detour on part of the figure-eight and hits in 41.5%. At λ = 10,000 it avoids the corridors altogether: no sampled hit was observed in 200 episodes, while mean position error rises to 0.470 m. Zero observed hits still has a 95% upper bound near 1.9%.
-</p>
-<figure>
-  <img class="fig" src="assets/revised_penalty_sweep.png" alt="Mean position error and observed collision rate as the tabular GPI risk penalty increases">
-  <figcaption>The corrected noise ×1 risk-penalty sweep. Each point is a separately trained policy, evaluated on the same 200 noise seeds. The curve describes a trade-off in this layout; λ was not selected from an external safety specification.</figcaption>
-</figure>
-
-<h2>Compression still costs safety</h2>
-<p>
-  The RBF averager stores 450,000 weights instead of 3.36 million tabular values. Both corrected controllers now evaluate the value function by the same multilinear interpolation used in their offline Bellman backups. At noise ×0.5 the resulting hit rates are 44.5% for RBF and 5.5% for the table; at ×1 they are 91.5% and 41.5%. The loss is not limited to obstacle boundaries: on noise-free reference segments more than 0.3 m clear of an obstacle, mean position error is 0.330 m for RBF and 0.016 m for the table.
-</p>
-<p>
-  The evaluator mismatch did affect the old RBF numbers. With the <em>old</em> risk model held fixed, changing only its online value evaluation moves the noise ×0.5 hit rate from 41% to 46.5%. Retraining with the corrected disk risk and the consistent evaluator gives 44.5%. Thus the mismatch mattered, but it does not explain the large RBF–tabular safety gap. The compression claim concerns stored value parameters: at noise ×1, measured training peak GPU memory is 877 MB for RBF and 852 MB for the table.
-</p>
-
-<h2>Does the starting phase decide the result?</h2>
-<p>
-  The default experiment starts at reference step 2 while the controller's clock starts at step 0, creating an initial 0.557 m position error; it also runs for 2.4 periods. I repeated noise ×1 from phases 0, 25, 50 and 75, with the robot initialized exactly on the corresponding reference state, for exactly two complete periods each. There are 200 paired seeds at each phase.
-</p>
-<figure>
-  <img class="fig" src="assets/revised_phase_sweep.png" alt="Sampled collision rates from four aligned starting phases over two reference periods">
-  <figcaption>CEC collides in all 200 episodes at every phase. Corrected tabular GPI point estimates range from 42.0% to 50.5%; RBF GPI ranges from 82.5% to 86.0%. The ordering persists. Pairwise differences between phases are not clear with 200 seeds.</figcaption>
+<figcaption>Noise ×1, 200 paired episodes. The true position noise is 4 cm per step; a 1 cm risk σ underestimates it.</figcaption>
 </figure>
 <p>
-  In a single-process timing run, corrected tabular GPI lookahead takes 1.26 ms per control step, RBF lookahead 1.23 ms, and CEC 5.36 ms. Pure tabular lookup takes 0.16 ms, although this timing alone says nothing about its safety. All are faster than the 500 ms control period in this simulation.
+  Switching the transition noise on or off makes no measurable difference (paired exact McNemar p = 0.53).
+  Setting the collision probability to the true noise level changes the selected route and removes most collisions (p &lt; 10<sup>−30</sup>).
+  With 10 cm grid cells and 4 cm of noise, averaging the noise over a piecewise-linear value barely changes it.
+  What matters is a correctly calibrated collision probability, propagated backward in time by dynamic programming.
+  This holds for this grid, this layout and this penalty; it does not mean stochastic transitions never matter.
 </p>
 
-<h2>What the experiment does and does not establish</h2>
+<h2>The price of avoiding the gap</h2>
+<figure>
+  <img class="fig" src="assets/frontier.png" alt="Collision rate versus tracking error for CEC with safety margins and tabular GPI with different risk penalties">
+  <figcaption>Each point is a separately configured controller evaluated on the same 200 episodes at noise ×1.</figcaption>
+</figure>
+<p>
+  Tightening CEC's obstacle constraints by a margin m does not help at this noise level: every margin still collides in all 200 episodes.
+  Beyond 2.5 cm (half the gap), the gap becomes infeasible, and the ten-step NLP either pushes through on its slack variables or stalls at the entrance, reaching 99 cm of tracking error at m = 10 cm.
+  Sweeping GPI's risk weight λ instead moves the policy smoothly along a trade-off.
+  At λ = 10 or 100, it uses every gap and collides in 83% or 80.5% of episodes.
+  At λ = 1,000, it detours on one lobe (41.5%).
+  At λ = 10,000, it avoids both gaps and no collision was observed in 200 episodes, at 47 cm of tracking error.
+</p>
+
+<h2>Compressing the value function</h2>
+<p>
+  The RBF averager stores 450,000 weights instead of 3.36 million table entries, and it costs safety at every noise level: 44.5% against 5.5% collisions at noise ×0.5, and 91.5% against 41.5% at ×1.
+  The figure shows why.
+</p>
+<figure class="wide">
+  <img class="fig" src="assets/value_rbf.png" alt="Value along a line through an obstacle, mean value during GPI, and collision rate for tabular and RBF value functions">
+  <figcaption><b>Left:</b> the value along a line through the inflated obstacle C1, just before the robot reaches it. <b>Middle:</b> the mean value over GPI iterations. <b>Right:</b> collision rate. The least-squares fit is left out of the right panel because it does not track the reference at all.</figcaption>
+</figure>
+<p>
+  The table jumps sharply at the obstacle edge.
+  Averaging smooths the edge away and spreads the large in-obstacle values into free space, which lifts the whole value function and erases the small difference between "through the gap" and "around it".
+  The blur is not confined to obstacle boundaries either: on noise-free segments more than 0.3 m from any obstacle, the tracking error is 33 cm for RBF and 1.6 cm for the table.
+  The compression applies to the stored parameters; training still renders the value on the full grid (877 MB of GPU memory against 852 MB).
+</p>
+<p>
+  A plain least-squares fit of the same features fails differently.
+  Every cost is non-negative, so \(V \ge 0\), yet fitted policy iteration converges to a value function that is negative on 76% of states.
+  A least-squares projection is not a non-expansion: it rings near the steep collision penalty, and the greedy minimum picks exactly the points where the fit undershoots.
+  The resulting controller ends up 2.2 m from the reference on average.
+  <b>A smooth fit blurs the value function; a non-contractive fit converges to the wrong one.</b>
+</p>
+
+<h2>Does the starting phase matter?</h2>
+<p>
+  The default episode starts the robot two reference steps ahead of its clock, which creates a 0.56 m initial error, and runs for 2.4 periods of the figure-eight.
+  To rule out that particular start, I also ran noise ×1 from four starting phases, with the robot placed exactly on the reference, for exactly two periods each.
+</p>
+<figure>
+  <img class="fig" src="assets/phase.png" alt="Collision rate for four aligned starting phases over two reference periods">
+  <figcaption>200 paired episodes per point; bars show 95% intervals.</figcaption>
+</figure>
+<p>
+  CEC collides in all 200 episodes from every phase, tabular GPI in 42–50.5%, and RBF GPI in 82.5–86%.
+  The ordering holds from every starting phase; the differences between phases are within the intervals.
+</p>
+
+<h2>Compute</h2>
+<figure>
+<div class="table-wrap"><table class="paper">
+  <thead><tr><th>controller</th><th>time per step (ms)</th></tr></thead>
+  <tbody>
+    <tr><td>CEC (10-step NLP)</td><td>5.36</td></tr>
+    <tr><td class="hl">tabular GPI, one-step lookahead</td><td class="hl">1.26</td></tr>
+    <tr><td>tabular GPI, table lookup</td><td>0.16</td></tr>
+    <tr><td>RBF GPI, one-step lookahead</td><td>1.23</td></tr>
+  </tbody>
+</table></div>
+<figcaption>Single process, mean over three episodes. The control period is 500 ms.</figcaption>
+</figure>
+<p>
+  GPI moves the hard work offline: one training sweep over the 3.36 M-state grid takes about 8.5 s on an L40S, and a full policy takes a few minutes.
+  All controllers are far below the 500 ms control period, so online speed is not what separates them here.
+  Pure table lookup is the fastest option, but it rounds the robot's state to the nearest grid node and gives up the margin that the lookahead keeps.
+</p>
+
+<h2>What this does and does not show</h2>
 <ul>
-  <li>The empirical collision rates are for sampled robot centers in one simulated layout and one i.i.d. Gaussian dynamics model. They are not guarantees for continuous paths or a physical robot.</li>
-  <li>The λ sweep and model checks reuse seeds 0–199. The zero-hit λ = 10,000 point is an exploratory result on those seeds, not a held-out safety validation.</li>
-  <li>GPI knows the tested noise level and optimizes tracking plus a calibrated soft risk penalty. CEC uses nominal dynamics, a finite horizon, and slack-penalized obstacle constraints. Their tracking costs describe behavior under different objectives; this run does not isolate dynamic programming from model-predictive control.</li>
-  <li>The corrected disk union is exact because these four inflated obstacles are disjoint. The combination with workspace-boundary risk remains approximate where an obstacle extends beyond the square.</li>
-  <li>The noise-free GPI policy retains a 1 cm smoothing floor in its risk penalty. Its deterministic run is therefore a comparison of deployed policies, not a common deterministic optimization objective.</li>
-  <li>RBF results describe this uniform Gaussian lattice and averaging fit. They do not rule out obstacle-aware features or a different compressed representation.</li>
+  <li>The collision rates are for sampled robot positions in one simulated layout with i.i.d. Gaussian noise. They are not guarantees for continuous paths or a physical robot.</li>
+  <li>GPI knows the noise level and optimizes tracking plus a calibrated risk penalty; CEC uses nominal dynamics, a finite horizon and slack-penalized constraints. The comparison does not isolate dynamic programming from model-predictive control.</li>
+  <li>The λ sweep and all checks reuse seeds 0–199. The zero-collision point at λ = 10,000 is an observation on those seeds, not a held-out safety validation.</li>
+  <li>The additive disk probability is exact because these inflated obstacles do not overlap; its combination with the workspace boundary is approximate where an obstacle extends past the square.</li>
+  <li>The noise-free GPI policy keeps a 1 cm smoothing floor in its risk term, so the noise-free run compares deployed policies rather than a shared deterministic objective.</li>
+  <li>The RBF results cover Gaussian kernels on a uniform lattice. Obstacle-aware features or a different compressed representation might do better.</li>
 </ul>
+
+<h2>What I'll try next</h2>
 <p>
-  The next controlled comparison is to give CEC the same calibrated risk information and compare both methods at matched safety targets. I would also vary the corridor width and check how the detour threshold moves. Those interventions test whether the route and margin explanation generalizes beyond this particular five-centimeter gap.
+  The most direct next step is to give CEC the same calibrated collision probability and compare both controllers at matched safety targets.
+  That would separate "knows the noise" from "plans globally".
+  I would also vary the width of the gap to see how the detour threshold moves, which tests whether the route-and-margin explanation holds beyond this particular five-centimeter gap.
 </p>
 
-<h2>Reproduce the rerun</h2>
+<h2>Code and data</h2>
 <p>
-  The <a href="https://github.com/jnsungp/safe-trajectory-tracking">repository</a> contains the revised model specifications, 200-seed rollout suites, phase experiment, analysis script, figure generator, and aggregate JSON. The original hypothesis report is retained as a record of the earlier implementation; this article uses the corrected models and <code>revised_summary.json</code>.
+  Everything is at <a href="https://github.com/jnsungp/safe-trajectory-tracking">github.com/jnsungp/safe-trajectory-tracking</a>: the three controllers, the GPU implementation of GPI, the experiment runner, the analysis and figure scripts, and the aggregate results behind every number in this post.
 </p>
+
 <hr>
-<p class="footnote">Built on the starter code of ECE 276B (Nikolay Atanasov, UC San Diego). The initial implementation used an AI coding assistant; the rerun and article revision used Codex. Numerical claims above come from the saved revised rollouts and analysis scripts.</p>
+<p class="footnote">
+  Built on the starter code of <a href="https://natanaso.github.io/ece276b/">ECE 276B</a> (Nikolay Atanasov, UC San Diego).
+  The implementation and experiments were done with the help of AI coding assistants (Claude Code and Codex).
+</p>
+
 </main>
 </body>
 </html>

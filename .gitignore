@@ -17,4 +17,4 @@ blog_build/blog/safe-trajectory-tracking/**
 !blog_build/blog/safe-trajectory-tracking/post.css
 !blog_build/blog/safe-trajectory-tracking/assets/
 blog_build/blog/safe-trajectory-tracking/assets/**
-!blog_build/blog/safe-trajectory-tracking/assets/revised_*.png
+!blog_build/blog/safe-trajectory-tracking/assets/*

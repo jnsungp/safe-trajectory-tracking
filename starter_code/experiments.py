@@ -72,6 +72,10 @@ def model_specs():
         specs[f"revised_grid_medium_k1_lam{lam}"] = dict(value_type="grid", grid="medium",
                                                           noise_scale=1.0, risk_mode="exact_disks",
                                                           collision_penalty=float(lam))
+    # plain least-squares RBF with the same risk and evaluator (value-function comparison)
+    specs["revised_rbf_medium_k1"] = dict(value_type="rbf", grid="medium", noise_scale=1.0, risk_mode="exact_disks",
+                                          rbf_fit="ls", rbf_online_value="interpolated", rbf_stride_t=1,
+                                          rbf_stride_e=2, rbf_ls_t=0.8, rbf_ls_e=1.6)
     for name, spec in specs.items():
         if not name.startswith("revised_"):
             spec.setdefault("risk_mode", "independent_halfplane")

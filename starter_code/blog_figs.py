@@ -1,5 +1,8 @@
 """Figures for the blog post, in a minimal paper style (typewriter font, boxed axes, dashed grid,
-blue for the method in focus and grays for the others).  python blog_figs.py -> results/figs/blog/"""
+blue for tabular GPI and grays for the others).
+
+Run after revised_analysis.py and phase_robustness.py:  python blog_figs.py -> results/figs/blog/
+"""
 import json
 import os
 
@@ -11,14 +14,16 @@ import numpy as np
 from matplotlib import animation, colors
 
 import common as C
-from analyze import RES, load, wilson
+from analyze import RES, load
 
 OUT = os.path.join(RES, "figs", "blog")
 os.makedirs(OUT, exist_ok=True)
 
 BLUE, DGRAY, LGRAY = "#598BE7", "#7F7F7F", "#B4B4B4"
 COL = {"CEC": DGRAY, "GPI": BLUE, "RBF": LGRAY}
+PATH_COL = {"CEC": DGRAY, "GPI": BLUE, "RBF": "#8C8C8C"}  # RBF paths slightly darker to stay visible
 NAME = {"CEC": "CEC", "GPI": "Tabular GPI", "RBF": "RBF GPI"}
+METHODS = ("CEC", "GPI", "RBF")
 OBST_FILL, OBST_EDGE = "#E9E9E9", "#9A9A9A"
 
 plt.rcParams.update({
@@ -38,13 +43,14 @@ def tint(c, a=0.72):
     return (r + (1 - r) * a, g + (1 - g) * a, b + (1 - b) * a)
 
 
-def line(ax, x, y, c, label=None, ms=8, **kw):
-    return ax.plot(x, y, color=c, marker="o", ms=ms, mfc=tint(c), mec=c, mew=1.7, label=label, **kw)[0]
+def line(ax, x, y, c, ms=8, **kw):
+    kw.setdefault("mfc", tint(c))
+    return ax.plot(x, y, color=c, marker="o", ms=ms, mec=c, mew=1.7, **kw)[0]
 
 
-def legend_below(fig, handles, labels, title, ncol=None, y=0.0, x=0.56):
+def legend_below(fig, handles, labels, title, y=0.0, x=0.56):
     """One-row legend under the panels, with its title to the left of the entries."""
-    leg = fig.legend(handles, labels, loc="lower center", ncol=ncol or len(labels), bbox_to_anchor=(x, y),
+    leg = fig.legend(handles, labels, loc="lower center", ncol=len(labels), bbox_to_anchor=(x, y),
                      handlelength=2.6, columnspacing=2.2)
     fig.canvas.draw()
     bb = leg.get_window_extent().transformed(fig.transFigure.inverted())
@@ -53,71 +59,135 @@ def legend_below(fig, handles, labels, title, ncol=None, y=0.0, x=0.56):
 
 
 def summary():
-    return json.load(open(os.path.join(RES, "summary.json")))
+    return json.load(open(os.path.join(RES, "revised_summary.json")))
 
 
-# ------------------------------------------------------------------------------------------
-def fig_noise_sweep():
-    S = [r for r in summary()["main"] if r["controller"] in ("CEC", "GPI", "RBF")]
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
-    hs = {}
-    for c in ("CEC", "GPI", "RBF"):
-        g = sorted([r for r in S if r["controller"] == c], key=lambda r: r["k"])
-        k = np.array([r["k"] for r in g])
-        err = 100 * np.array([r["pos_err"] for r in g])
-        pc = 100 * np.array([r["p_coll"] for r in g])
-        lo = 100 * np.array([r["p_coll_ci"][0] if r["n"] > 1 else r["p_coll"] for r in g])
-        hi = 100 * np.array([r["p_coll_ci"][1] if r["n"] > 1 else r["p_coll"] for r in g])
-        clr = 100 * np.array([r["min_clear_med"] for r in g])
-        hs[c] = line(axes[0], k, err, COL[c])
-        line(axes[1], k, pc, COL[c])
-        axes[1].fill_between(k, lo, hi, color=COL[c], alpha=0.15, lw=0)
-        line(axes[2], k, clr, COL[c])
-    axes[0].set_title("Tracking Error (cm)")
-    axes[1].set_title("Collision Rate (%)")
-    axes[2].set_title("Min Clearance (cm)")
-    axes[1].set_ylim(-5, 105)
-    axes[2].axhline(0, color="black", lw=1.0, ls=(0, (4, 3)))
-    axes[2].text(1.98, -2, "collision", ha="right", va="top", fontsize=12, color="#555555")
-    for ax in axes:
-        ax.set_xlabel(r"Noise Scale ($\times\sigma$)")
-        ax.set_xticks([0, 0.5, 1, 1.5, 2])
-    fig.tight_layout(rect=(0, 0.11, 1, 1))
-    legend_below(fig, [hs[c] for c in hs], [NAME[c] for c in hs], "Method")
-    fig.savefig(os.path.join(OUT, "noise_sweep.png"), dpi=200)
+def main_rows(s, c):
+    return sorted([r for r in s["main"] if r["controller"] == c], key=lambda r: r["k"])
+
+
+def ci(r, key):
+    return r[f"{key}_ci"] if r["n"] > 1 else (r[key], r[key])
+
+
+def save(fig, name, rect=(0, 0.11, 1, 1), legend=None):
+    fig.tight_layout(rect=rect)
+    if legend:
+        legend_below(fig, *legend)
+    fig.savefig(os.path.join(OUT, name), dpi=200)
     plt.close(fig)
 
 
-def fig_value_rbf():
+# ------------------------------------------------------------------------------------------
+def fig_noise_sweep(s):
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
+    hs = []
+    for c in METHODS:
+        g = main_rows(s, c)
+        k = np.array([r["k"] for r in g])
+        hs.append(line(axes[0], k, [100 * r["pos_err"] for r in g], COL[c]))
+        line(axes[1], k, [100 * r["p_coll"] for r in g], COL[c])
+        axes[1].fill_between(k, [100 * ci(r, "p_coll")[0] for r in g], [100 * ci(r, "p_coll")[1] for r in g],
+                             color=COL[c], alpha=0.15, lw=0)
+        line(axes[2], k, [r["safe_steps_mean"] for r in g], COL[c])
+        axes[2].fill_between(k, [ci(r, "safe_steps_mean")[0] for r in g], [ci(r, "safe_steps_mean")[1] for r in g],
+                             color=COL[c], alpha=0.15, lw=0)
+    axes[0].set_title("Tracking Error (cm)")
+    axes[1].set_title("Collision Rate (%)")
+    axes[2].set_title("Steps Until First Collision")
+    axes[1].set_ylim(-5, 105)
+    axes[2].set_ylim(-5, 255)
+    for ax in axes:
+        ax.set_xlabel(r"Noise Scale ($\times\sigma$)")
+        ax.set_xticks([0, 0.5, 1, 1.5, 2])
+    save(fig, "noise_sweep.png", legend=(hs, [NAME[c] for c in METHODS], "Method"))
+
+
+def fig_survival(rows):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.6))
+    hs = []
+    t = np.arange(C.N_STEPS + 1)
+    for ax, k in zip(axes, (0.5, 1.0)):
+        for c in METHODS:
+            rr = [r for r in rows if r["controller"] == c and r["noise_scale"] == k]
+            first = np.array([r["first_coll_t"] if r["first_coll_t"] >= 0 else 10 ** 6 for r in rr])
+            alive = 100 * (first[None, :] > t[:, None]).mean(1)
+            h = line(ax, t, alive, COL[c], markevery=24)
+            if k == 1.0:
+                hs.append(h)
+        for a, b in ((19, 25), (76, 82), (119, 125), (176, 182), (219, 225)):
+            ax.axvspan(a, b, color="#EEEEEE", lw=0, zorder=0)
+        ax.set_title(rf"Noise $\times {k:g}$")
+        ax.set_xlabel("Time Step")
+        ax.set_xlim(0, 240)
+        ax.set_xticks([0, 60, 120, 180, 240])
+        ax.set_ylim(-5, 105)
+    axes[0].set_ylabel("Episodes Without a Collision (%)")
+    save(fig, "survival.png", legend=(hs, [NAME[c] for c in METHODS], "Method"))
+
+
+def fig_frontier(s):
+    old = json.load(open(os.path.join(RES, "summary.json")))  # CEC margin runs (CEC is unaffected by GPI's risk model)
+    cec = sorted([r for r in old["pilot_margin"] if r["k"] == 1.0], key=lambda r: r["pos_err"])
+    gpi = sorted(s["lambda_sweep"], key=lambda r: r["pos_err"])
+    rbf = [r for r in s["main"] if r["controller"] == "RBF" and r["k"] == 1.0]
+    fig, ax = plt.subplots(figsize=(10, 5.6))
+    h1 = line(ax, [100 * r["pos_err"] for r in cec], [100 * r["p_coll"] for r in cec], DGRAY)
+    h2 = line(ax, [100 * r["pos_err"] for r in gpi], [100 * r["p_coll"] for r in gpi], BLUE)
+    h3 = line(ax, [100 * r["pos_err"] for r in rbf], [100 * r["p_coll"] for r in rbf], LGRAY, ls="none")
+    for r in cec:
+        m = float(r["controller"].replace("CEC-m", ""))
+        off = {0.0: (-8, 10), 0.025: (8, -18), 0.05: (-10, 10), 0.1: (-40, -20)}[m]
+        ax.annotate(f"m={m * 100:g}cm", (100 * r["pos_err"], 100 * r["p_coll"]), xytext=off,
+                    textcoords="offset points", fontsize=12, color="#444444")
+    for r in gpi:
+        lam = r["controller"].replace("GPI-lam", "")
+        off = {"10": (-18, -22), "100": (8, 6), "1000": (8, 6), "10000": (8, 6)}[lam]
+        ax.annotate(r"$\lambda$=" + f"{int(lam):,}", (100 * r["pos_err"], 100 * r["p_coll"]), xytext=off,
+                    textcoords="offset points", fontsize=12, color="#444444")
+    ax.set_xscale("log")
+    ax.set_xticks([10, 20, 50, 100])
+    ax.set_xticklabels(["10", "20", "50", "100"])
+    ax.minorticks_off()
+    ax.set_xlim(7, 130)
+    ax.set_ylim(-6, 110)
+    ax.set_xlabel("Tracking Error (cm, log)")
+    ax.set_ylabel("Collision Rate (%)")
+    ax.set_title(r"Safety vs. Tracking at Noise $\times 1$")
+    save(fig, "frontier.png", rect=(0, 0.1, 1, 1),
+         legend=([h1, h2, h3], ["CEC + margin m", r"Tabular GPI, penalty $\lambda$", "RBF GPI"], "Method"))
+
+
+def fig_value_rbf(s):
     import torch
     from gpi import GPI
-    models = [("GPI", "grid_medium_k1", "Tabular"), ("RBFavg", "rbfavg_medium_k1", "RBF (averager)"),
-              ("RBFls", "rbf_medium_k1", "RBF (least squares)")]
+    models = [("GPI", "revised_grid_medium_k1", "Tabular"), ("RBFavg", "revised_rbfavg_medium_k1", "RBF (averager)"),
+              ("RBFls", "revised_rbf_medium_k1", "RBF (least squares)")]
     cols = {"GPI": BLUE, "RBFavg": LGRAY, "RBFls": LGRAY}
-    styles = {"GPI": dict(), "RBFavg": dict(), "RBFls": dict(ls="--", mfc="white")}
+    styles = {"GPI": {}, "RBFavg": {}, "RBFls": dict(ls="--", mfc="white")}
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
     xs = np.linspace(-1.2, 1.2, 97)
     t = 20
-    hs = []
+    hs, labs = [], []
     for key, name, lab in models:
-        g = GPI.load(os.path.join(RES, "models", f"{name}.npz"), device="cpu")
-        ev = g.V.evaluator(exact=True) if g.config.value_type == "rbf" else g.V.evaluator()
+        path = os.path.join(RES, "models", f"{name}.npz")
+        if not os.path.exists(path):
+            continue
+        g = GPI.load(path, device="cpu")
+        ev = g.V.evaluator()  # multilinear interpolation of node values (same as the Bellman backup)
         q = [torch.tensor(a.reshape(1, -1), dtype=torch.float32) for a in (xs, np.zeros_like(xs), np.zeros_like(xs))]
         with torch.no_grad():
             V = ev(torch.tensor([t]), *q).numpy().ravel()
-        st = dict(mfc=tint(cols[key]))
-        st.update(styles[key])
-        hs.append(axes[0].plot(xs, V / 1000, color=cols[key], lw=2.3, marker="o", markevery=12, ms=8,
-                               mec=cols[key], mew=1.7, **st)[0])
+        hs.append(line(axes[0], xs, V / 1000, cols[key], markevery=12, **styles[key]))
+        labs.append(lab)
         hist = [h["V_mean"] for h in g.meta["history"]]
-        axes[1].plot(np.arange(1, len(hist) + 1), np.array(hist) / 1000, color=cols[key], lw=2.3, marker="o",
-                     markevery=2, ms=8, mec=cols[key], mew=1.7, **st)
-    # obstacle interval along the slice
+        line(axes[1], np.arange(1, len(hist) + 1), np.array(hist) / 1000, cols[key], markevery=2, **styles[key])
     p = np.stack([xs + C.REF[t, 0], np.full_like(xs, C.REF[t, 1])], 1)
     inside = C.clearance(p) < 0
     x0, x1 = xs[inside].min(), xs[inside].max()
     axes[0].axvspan(x0, x1, color="#EEEEEE", lw=0, zorder=0)
-    axes[0].text((x0 + x1) / 2, 3.35, "inside C1", ha="center", va="center", fontsize=12, color="#555555")
+    axes[0].text((x0 + x1) / 2, 0.93, "inside C1", ha="center", va="center", fontsize=12, color="#555555",
+                 transform=axes[0].get_xaxis_transform())
     axes[0].set_title("Value Across an Obstacle")
     axes[0].set_xlabel(r"Position Error $\tilde{e}_x$ (m)")
     axes[0].set_ylabel(r"$V$ ($\times 10^3$)")
@@ -126,120 +196,34 @@ def fig_value_rbf():
     axes[1].set_xticks([1, 5, 10, 15, 20])
     for ax in axes[:2]:
         ax.axhline(0, color="black", lw=1.0, ls=(0, (4, 3)))
-    axes[1].text(20, -0.12, r"$V \geq 0$ must hold", ha="right", va="top", fontsize=12, color="#555555")
-    # collision rate vs noise: tabular vs averager (least squares omitted: it does not track at all)
-    S = summary()["main"]
+    axes[1].text(0.97, 0.06, r"$V \geq 0$ must hold", ha="right", va="bottom", fontsize=12, color="#555555",
+                 transform=axes[1].transAxes)
     for c, key in (("GPI", "GPI"), ("RBF", "RBFavg")):
-        g = sorted([r for r in S if r["controller"] == c], key=lambda r: r["k"])
+        g = main_rows(s, c)
         line(axes[2], [r["k"] for r in g], [100 * r["p_coll"] for r in g], cols[key])
     axes[2].set_title("Collision Rate (%)")
     axes[2].set_xlabel(r"Noise Scale ($\times\sigma$)")
     axes[2].set_xticks([0, 0.5, 1, 1.5, 2])
     axes[2].set_ylim(-5, 105)
-    fig.tight_layout(rect=(0, 0.11, 1, 1))
-    legend_below(fig, hs, [m[2] for m in models], "Value Function")
-    fig.savefig(os.path.join(OUT, "value_rbf.png"), dpi=200)
-    plt.close(fig)
+    save(fig, "value_rbf.png", legend=(hs, labs, "Value Function"))
 
 
-def fig_frontier():
-    s = summary()
-    cec = sorted([r for r in s["pilot_margin"] if r["k"] == 1.0], key=lambda r: r["stage_cost"])
-    gpi = sorted(s["pilot_lambda"], key=lambda r: r["stage_cost"])
-    rbf = [r for r in s["main"] if r["controller"] == "RBF" and r["k"] == 1.0]
-    fig, ax = plt.subplots(figsize=(10, 5.6))
-    h1 = line(ax, [r["stage_cost"] for r in cec], [r["coll_steps"] for r in cec], DGRAY)
-    h2 = line(ax, [r["stage_cost"] for r in gpi], [r["coll_steps"] for r in gpi], BLUE)
-    h3 = line(ax, [r["stage_cost"] for r in rbf], [r["coll_steps"] for r in rbf], LGRAY, ls="none")
-    for r in cec:
-        m = r["controller"].replace("CEC-m", "")
-        off = {"0": (8, 4), "0.025": (8, -16), "0.05": (-10, 10), "0.1": (-30, 10)}.get(m, (7, 5))
-        ax.annotate(f"m={float(m) * 100:g}cm", (r["stage_cost"], r["coll_steps"]), xytext=off,
-                    textcoords="offset points", fontsize=12, color="#444444")
-    for r in gpi:
-        lam = r["controller"].replace("GPI-lam", "")
-        off = (7, 5) if lam != "100" else (7, -14)
-        ax.annotate(r"$\lambda$=" + lam, (r["stage_cost"], r["coll_steps"]), xytext=off,
-                    textcoords="offset points", fontsize=12, color="#444444")
-    ax.set_xscale("log")
-    ax.set_xlim(0.18, 45)
-    ax.set_ylim(-1, 18)
-    ax.set_xlabel("Mean Stage Cost (log)")
-    ax.set_ylabel("Collision Steps per Episode")
-    ax.set_title(r"Safety vs. Tracking at Noise $\times 1$")
-    fig.tight_layout(rect=(0, 0.1, 1, 1))
-    legend_below(fig, [h1, h2, h3], ["CEC + margin m", r"Tabular GPI, penalty $\lambda$", "RBF GPI"], "Method",
-                 y=0.0, x=0.55)
-    fig.savefig(os.path.join(OUT, "frontier.png"), dpi=200)
-    plt.close(fig)
-
-
-def fig_collision_timing():
-    rows, _ = load("main")
-    fig, ax = plt.subplots(figsize=(11, 4.6))
-    bins = np.arange(0, 101, 2)
+def fig_phase(s):
+    fig, ax = plt.subplots(figsize=(8.5, 5.0))
     hs = []
-    for c in ("CEC", "GPI", "RBF"):
-        ts = []
-        for r in rows:
-            if r["controller"] == c and r["noise_scale"] == 1.0:
-                ts += list(np.where(r["clearance"] < 0)[0] % C.T_PERIOD)
-        h, _ = np.histogram(ts, bins=bins)
-        centers = bins[:-1] + 1
-        hs.append(line(ax, centers, h / 200, COL[c], ms=6))
-    for (a, b), lab in (((19, 25), "C1"), ((76, 82), "C2")):
-        ax.axvspan(a, b, color="#EEEEEE", lw=0, zorder=0)
-        ax.text((a + b) / 2, 2.85, f"ref. inside {lab}", ha="center", fontsize=12, color="#555555")
-    ax.set_ylim(-0.1, 3.1)
-    ax.set_xlim(0, 100)
-    ax.set_xlabel("Time within the Figure-Eight (steps)")
-    ax.set_title(r"Collisions per Episode, per 2-step Bin (noise $\times 1$)")
-    fig.tight_layout(rect=(0, 0.13, 1, 1))
-    legend_below(fig, hs, [NAME[c] for c in ("CEC", "GPI", "RBF")], "Method", y=-0.01)
-    fig.savefig(os.path.join(OUT, "collision_timing.png"), dpi=200)
-    plt.close(fig)
-
-
-def fig_compute():
-    s = summary()
-    tim = {t["controller"]: t for t in s["timing"]}
-    off = [o for o in s["offline_timing"] if "RBF" not in o["grid"]]
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.6), gridspec_kw=dict(width_ratios=[1.35, 1, 1]))
-    ax = axes[0]
-    items = [("CEC N=10", "CEC", DGRAY), ("CEC N=20", "CEC N=20", DGRAY),
-             ("GPI lookahead (medium)", "GPI lookahead", BLUE), ("GPI lookup (medium)", "GPI lookup", BLUE),
-             ("RBF lookahead (exact kernel)", "RBF lookahead", LGRAY)]
-    for i, (key, lab, c) in enumerate(items):
-        v = tim[key]["ms_mean"]
-        ax.barh(i, v, height=0.55, color=tint(c, 0.35), edgecolor=c, lw=1.6)
-        ax.text(v * 1.15, i, f"{v:.2f} ms", va="center", fontsize=12)
-    ax.set_yticks(range(len(items)))
-    ax.set_yticklabels([it[1] for it in items])
-    ax.invert_yaxis()
-    ax.set_xscale("log")
-    ax.set_xlim(0.08, 60)
-    ax.set_xticks([0.1, 1, 10])
-    ax.set_xticklabels(["0.1", "1", "10"])
-    ax.minorticks_off()
-    ax.grid(axis="y", visible=False)
-    ax.set_title("Online Time per Step (ms)")
-    ns = np.array([o["n_states"] for o in off]) / 1e6
-    line(axes[1], ns, [o["sec_per_iter"] for o in off], BLUE)
-    for o, n in zip(off, ns):
-        dx = -52 if o["grid"] == "fine" else 8
-        axes[1].annotate(o["grid"], (n, o["sec_per_iter"]), xytext=(dx, 6), textcoords="offset points", fontsize=12)
-    axes[1].set_ylim(-1, 33)
-    axes[1].set_title("Offline Time per Iteration (s)")
-    axes[1].set_xlabel("States (millions)")
-    h1 = line(axes[2], ns, [o["peak_gpu_MB"] / 1024 for o in off], BLUE)
-    h2 = line(axes[2], ns, [o["dense_P_table_GB"] for o in off], LGRAY, ls="--")
-    axes[2].set_yscale("log")
-    axes[2].set_title("Memory (GB, log)")
-    axes[2].set_xlabel("States (millions)")
-    fig.tight_layout(rect=(0, 0.11, 1, 1))
-    legend_below(fig, [h1, h2], ["on-the-fly GPI (measured)", "stored transition table"], "Memory", y=-0.02)
-    fig.savefig(os.path.join(OUT, "compute.png"), dpi=200)
-    plt.close(fig)
+    for i, c in enumerate(METHODS):
+        g = sorted([r for r in s["phase_robustness"] if r["controller"] == c], key=lambda r: r["phase"])
+        x = np.array([r["phase"] for r in g]) + (i - 1) * 1.6
+        y = np.array([100 * r["p_hit"] for r in g])
+        lo = y - np.array([100 * r["p_hit_ci"][0] for r in g])
+        hi = np.array([100 * r["p_hit_ci"][1] for r in g]) - y
+        ax.errorbar(x, y, yerr=[lo, hi], fmt="none", ecolor=COL[c], elinewidth=1.4, capsize=4)
+        hs.append(line(ax, x, y, COL[c]))
+    ax.set_xticks([0, 25, 50, 75])
+    ax.set_xlabel("Starting Phase of the Reference (step)")
+    ax.set_ylim(-5, 108)
+    ax.set_title(r"Collision Rate (%) by Starting Phase, Noise $\times 1$")
+    save(fig, "phase.png", rect=(0, 0.12, 1, 1), legend=(hs, [NAME[c] for c in METHODS], "Method"))
 
 
 def draw_env(ax, lim=3.2):
@@ -253,15 +237,13 @@ def draw_env(ax, lim=3.2):
     ax.plot(np.r_[r[:, 0], r[0, 0]], np.r_[r[:, 1], r[0, 1]], color="black", lw=1.0, ls=":", zorder=2)
 
 
-def fig_corridor(seeds=range(20)):
-    rows, _ = load("main")
+def fig_corridor(rows, seeds=range(20)):
     fig, axes = plt.subplots(1, 3, figsize=(15, 5.4))
-    for ax, c in zip(axes, ("CEC", "GPI", "RBF")):
+    for ax, c in zip(axes, METHODS):
         draw_env(ax)
-        col = COL[c] if c != "RBF" else "#8C8C8C"
         for r in rows:
             if r["controller"] == c and r["noise_scale"] == 1.0 and r["seed"] in seeds:
-                ax.plot(r["traj"][:, 0], r["traj"][:, 1], color=col, lw=1.0, alpha=0.55, zorder=3)
+                ax.plot(r["traj"][:, 0], r["traj"][:, 1], color=PATH_COL[c], lw=1.0, alpha=0.55, zorder=3)
         ax.set_xlim(0.2, 3.1)
         ax.set_ylim(-0.9, 2.1)
         ax.set_title(NAME[c])
@@ -278,18 +260,17 @@ def triangle(x, y, th, h=0.35, w=0.2):
     return (R @ tri.T).T + [x, y]
 
 
-def gif_rollout(k=1.0, seed=0, stride=2):
-    rows, _ = load("main")
+def gif_rollout(rows, k=1.0, seed=0, stride=2):
     tr = {r["controller"]: r for r in rows if r["noise_scale"] == k and r["seed"] == seed and r["controller"] in COL}
     fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.9), dpi=100)
     arts = []
-    for ax, c in zip(axes, ("CEC", "GPI", "RBF")):
+    for ax, c in zip(axes, METHODS):
         draw_env(ax)
         ax.set_xticks([])
         ax.set_yticks([])
         ax.grid(False)
         ax.set_title(NAME[c], fontsize=15)
-        col = COL[c] if c != "RBF" else "#8C8C8C"
+        col = PATH_COL[c]
         trail, = ax.plot([], [], color=col, lw=1.6, zorder=3)
         robot = plt.Polygon(triangle(0, 0, 0), color=col, zorder=5)
         refm = plt.Polygon(triangle(0, 0, 0), fc="white", ec="black", lw=1.0, zorder=4)
@@ -318,8 +299,7 @@ def gif_rollout(k=1.0, seed=0, stride=2):
     plt.close(fig)
 
 
-def thumbnail():
-    rows, _ = load("main")
+def thumbnail(rows):
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=100)
     draw_env(ax)
     for c in ("CEC", "GPI"):
@@ -335,12 +315,14 @@ def thumbnail():
 
 
 if __name__ == "__main__":
-    fig_noise_sweep()
-    fig_value_rbf()
-    fig_frontier()
-    fig_collision_timing()
-    fig_compute()
-    fig_corridor()
-    thumbnail()
-    gif_rollout()
+    s = summary()
+    rows, _ = load("revised")  # results/rollouts_revised_part_k*.pkl
+    fig_noise_sweep(s)
+    fig_survival(rows)
+    fig_frontier(s)
+    fig_value_rbf(s)
+    fig_phase(s)
+    fig_corridor(rows)
+    thumbnail(rows)
+    gif_rollout(rows)
     print(sorted(os.listdir(OUT)))
