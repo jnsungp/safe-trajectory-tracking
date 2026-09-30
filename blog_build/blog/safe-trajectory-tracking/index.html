@@ -213,8 +213,8 @@ V^*(\tau, e) = \min_\pi \ \mathbb E \Big[\sum_{t \ge \tau} \gamma^{t-\tau} \big(
   Nothing then pushes the plan back out, and the controller follows the reference straight through C1, 40 cm deep in the median episode; it does the same without any noise.
 </p>
 <figure class="wide">
-  <img src="assets/riskcec_c1.gif" alt="Animated ten-step plans of the risk-aware CEC through C1, with and without obstacle constraints">
-  <figcaption>Noise ×0.25, seed 0, the first pass of C1. Circles are the ten planned positions, shaded by the collision probability each one is assigned. <b>Left:</b> the plan jumps from white straight to black, skipping the band where the probability has a slope, and follows the reference through C1. <b>Right:</b> with the obstacle constraints kept, the plan bends into the C1–C3 gap.</figcaption>
+  <img class="fig" src="assets/riskcec_plan.png" alt="The risk-aware CEC's ten-step plan into C1, the plan with obstacle constraints, and the planned positions on the collision-probability curve">
+  <figcaption>Noise ×0.25, seed 0, step 13, six steps before the robot enters C1. Circles are the ten planned positions, shaded by the collision probability each one is assigned (white 0, black 1), and the thin dotted orange line is where the robot then went. <b>Left:</b> the plan steps from just outside the inflated C1 to deep inside it and follows the reference through. <b>Middle:</b> with the obstacle constraints kept, the plan stays outside and bends into the C1–C3 gap. <b>Right:</b> the left plan's positions on the probability curve; none of them lies in the ±3σ band where the curve has a slope.</figcaption>
 </figure>
 <p>
   Keeping CEC's obstacle constraints on the noise-free positions restores a gradient everywhere, and with them the controller collides in 1 of 200 episodes at ×0.25, at 6.4 cm of tracking error.

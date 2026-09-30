@@ -149,47 +149,6 @@ def risk_of(px, py, k):
 
 
 # ------------------------------------------------------------------------------------------
-def gif_riskcec_c1(P, t0=8, t1=34):
-    """Noise x0.25: the risk-aware CEC plans straight through C1, because its planned positions sit where the
-    collision probability is flat; with the obstacle constraints kept, the plan bends around it."""
-    fig, axes = plt.subplots(1, 2, figsize=(10.4, 5.0), dpi=100)
-    arts = []
-    for ax, (name, title) in zip(axes, [("RiskCEC-soft@0.25", "Risk-aware CEC"),
-                                        ("RiskCEC-hard@0.25", "+ Obstacle Constraints")]):
-        bare(ax)
-        obstacles(ax, (0, 2))
-        reference(ax, 0, 60)
-        ax.set_xlim(0.45, 3.25)
-        ax.set_ylim(-1.0, 2.2)
-        ax.set_title(title, fontsize=15)
-        trail, = ax.plot([], [], color=ORANGE, lw=1.6, zorder=4)
-        plan, = ax.plot([], [], color=ORANGE, lw=0.9, ls="--", zorder=5)
-        dots = ax.scatter([], [], s=34, c=[], cmap="Greys", vmin=0, vmax=1, edgecolors=ORANGE, linewidths=1.0, zorder=6)
-        robot, ball, refm = robot_artists(ax, ORANGE)
-        txt = ax.text(0.52, -0.95, "", fontsize=11, va="bottom")
-        arts.append((P[name], trail, plan, dots, robot, ball, refm, txt))
-    sm = plt.cm.ScalarMappable(cmap="Greys", norm=plt.Normalize(0, 1))
-    cb = fig.colorbar(sm, ax=axes, orientation="horizontal", fraction=0.05, pad=0.04, aspect=40)
-    cb.set_label("collision probability the plan assigns to each planned position", fontsize=12)
-    cb.ax.tick_params(labelsize=11)
-
-    def update(t):
-        for run, trail, plan, dots, robot, ball, refm, txt in arts:
-            X, st = run["traj"], run["steps"][t]
-            Xp = st["cands"][st["chosen"]]["X"]
-            trail.set_data(X[: t + 1, 0], X[: t + 1, 1])
-            plan.set_data(Xp[:, 0], Xp[:, 1])
-            dots.set_offsets(Xp[1:])
-            dots.set_array(risk_of(Xp[1:, 0], Xp[1:, 1], 0.25))
-            set_robot(robot, ball, X[t], ORANGE, run["clearance"][t] < 0)
-            refm.set_xy(triangle(*C.ref(t), h=0.22, w=0.13))
-            txt.set_text(f"step {t}   collisions so far: {int((run['clearance'][: t + 1] < 0).sum())}")
-        return []
-
-    fig.subplots_adjust(left=0.02, right=0.98, top=0.93, bottom=0.2, wspace=0.04)
-    save_gif(fig, update, list(range(t0, t1)) + [t1 - 1] * 8, "riskcec_c1.gif", fps=4)
-
-
 def gif_riskcec_stall(P, gpi_row, stride=2):
     """Noise x1: the ten-step plan curls up at the minimum speed instead of paying for the gap, and the robot
     falls behind; GPI's value as the terminal cost removes the stall."""
@@ -284,7 +243,6 @@ def gif_hybrid_route(P, gpi_path_rows, bg_rows, t0=44, t1=100):
 
 if __name__ == "__main__":
     P = load_plans()
-    gif_riskcec_c1(P)
     gif_riskcec_stall(P, pick(rows_of("revised_part_k1"), "GPI", 1.0, [SEED])[0])
     path_rows = rows_of("path")
     gif_hybrid_route(P, path_rows, path_rows)

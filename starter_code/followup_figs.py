@@ -131,6 +131,59 @@ def fig_riskcec_failures(s, risk_rows, seeds=range(20)):
          legend=(hs, ["Risk-aware CEC", "+ constraints", "+ GPI value", "Tabular GPI"], "Controller", 0.0, 0.58))
 
 
+def fig_riskcec_plan(t=13, k=0.25):
+    """One step of the seed-0 episode at noise x0.25: (a) the risk-aware CEC's ten planned positions, shaded by
+    their collision probability, jump from outside the band straight into C1; (b) with the obstacle constraints
+    the plan stays outside; (c) the same positions on the probability curve."""
+    from followup_gifs import load_plans, risk_of
+    P = load_plans()
+    c1 = C.OBSTACLES[0]
+    radius = c1[2] + C.ROBOT_RADIUS
+    sig = max(0.04 * k, 0.01)
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5.0), gridspec_kw=dict(width_ratios=[1, 1, 1.3]))
+    plans = {}
+    for ax, (name, title) in zip(axes[:2], [("RiskCEC-soft@0.25", "Risk-aware CEC"),
+                                            ("RiskCEC-hard@0.25", "+ Obstacle Constraints")]):
+        run = P[name]
+        st = run["steps"][t]
+        Xp = st["cands"][st["chosen"]]["X"]
+        plans[name] = Xp
+        ax.set_aspect("equal")
+        obstacles(ax, (0, 2))
+        reference(ax, 0, 60)
+        X = run["traj"]
+        ax.plot(X[t:40, 0], X[t:40, 1], color=ORANGE, lw=1.0, ls=":", zorder=3)
+        ax.plot(X[: t + 1, 0], X[: t + 1, 1], color=ORANGE, lw=1.8, zorder=4)
+        ax.plot(Xp[:, 0], Xp[:, 1], color=ORANGE, lw=0.9, ls="--", zorder=5)
+        ax.scatter(Xp[1:, 0], Xp[1:, 1], s=46, c=risk_of(Xp[1:, 0], Xp[1:, 1], k), cmap="Greys", vmin=0, vmax=1,
+                   edgecolors=ORANGE, linewidths=1.1, zorder=6)
+        ax.plot([X[t, 0]], [X[t, 1]], "o", ms=8, color=ORANGE, zorder=7)
+        ax.set_xlim(0.45, 3.25)
+        ax.set_ylim(-1.0, 2.2)
+        ax.set_title(title)
+
+    ax = axes[2]
+    sd = np.linspace(-0.45, 0.6, 2101)
+    ax.plot(100 * sd, ncx2.cdf((radius / sig) ** 2, 2, ((radius + sd) / sig) ** 2), color="black", lw=1.8, zorder=3)
+    ax.axvspan(-100 * 3 * sig, 100 * 3 * sig, color="#EEEEEE", lw=0, zorder=0)
+    ax.text(0, -0.1, r"$\pm 3\sigma$", ha="center", va="center", fontsize=12, color="#555555")
+    Xp = plans["RiskCEC-soft@0.25"][1:]
+    d = 100 * (np.linalg.norm(Xp - c1[:2], axis=1) - radius)
+    pr = risk_of(Xp[:, 0], Xp[:, 1], k)
+    ax.scatter(d, pr, s=60, c=pr, cmap="Greys", vmin=0, vmax=1, edgecolors=ORANGE, linewidths=1.2, zorder=5)
+    i = int(np.flatnonzero(pr > 0.5)[0])  # the first planned position inside
+    ax.annotate("", xy=(d[i] + 0.8, pr[i] - 0.04), xytext=(d[i - 1] - 0.8, pr[i - 1] + 0.04),
+                arrowprops=dict(arrowstyle="->", color="#444444", lw=1.3), zorder=4)
+    ax.text(-10, 0.42, "one planned step", ha="right", va="center", fontsize=12, color="#444444")
+    ax.set_xlim(-45, 60)
+    ax.set_ylim(-0.17, 1.1)
+    ax.set_xlabel("Distance Outside Inflated C1 (cm)")
+    ax.set_title("Collision Probability of the Plan")
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUT, "riskcec_plan.png"), dpi=200)
+    plt.close(fig)
+
+
 def fig_gap_dash(s, rows_k, k=0.5, seeds=range(40)):
     """(a) GPI's samples straddle the C2-C4 gap while the path goes through it; (b) sampled vs path rates."""
     fig, axes = plt.subplots(1, 2, figsize=(13, 5.3), gridspec_kw=dict(width_ratios=[1, 1.25]))
@@ -291,6 +344,7 @@ if __name__ == "__main__":
     s = summary()
     risk_rows = rows_of("riskcec")
     fig_riskcec_failures(s, risk_rows)
+    fig_riskcec_plan()
     base_k05 = rows_of("revised_part_k0p5")
     fig_gap_dash(s, base_k05)
     if "path" in s:
