@@ -25,7 +25,7 @@ It prints tracking errors in the starter's format, the mean control time, and th
 | `value_function.py` | `GridValueFunction` (tabular) and `FeatureValueFunction` (Gaussian RBF with an exact Kronecker ridge LS fit, or a normalized-kernel averager) |
 | `experiments.py` | model zoo (`train`), rollout suites (`rollout --suite revised/riskcec/path/path_frontier/heldout/...`), `timing`, `timing_revised`, `timing_followup`, `offline_timing` |
 | `analyze.py`, `extra_stats.py` | statistics (Wilson CIs, paired Wilcoxon, exact McNemar) and figures in `results/figs/` |
-| `blog_figs.py`, `followup_figs.py` | figures and GIF for the blog post |
+| `blog_figs.py`, `followup_figs.py`, `followup_gifs.py` | figures and GIFs for the blog post (`followup_gifs.py` re-runs the CEC variants on seed 0 to record their plans and checks that each re-run reproduces the stored rollout) |
 | `revised_analysis.py`, `followup_analysis.py` | aggregate statistics for the main and follow-up experiments (`results/revised_summary.json`, `results/followup_summary.json`) |
 | `make_media.py` | side-by-side rollout GIFs (first round of experiments) |
 | `utils.py`, `mujoco_car.py`, `mujoco_assets/` | starter code: reference trajectory, visualization, MuJoCo car |
@@ -63,7 +63,7 @@ python experiments.py rollout --suite path_frontier  # lambda sweeps and CEC mar
 python experiments.py rollout --suite path_det       # GPI with noise-free transitions and the path risk
 python experiments.py rollout --suite heldout        # seeds 1000-1199 at noise x1
 python experiments.py timing_followup
-python followup_analysis.py && python followup_figs.py
+python followup_analysis.py && python followup_figs.py && python followup_gifs.py
 ```
 
 The rollouts are written to `results/rollouts_{riskcec,path,path_frontier,path_det,heldout}.pkl` (not committed); the aggregate is `results/followup_summary.json`.

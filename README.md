@@ -46,7 +46,7 @@ A follow-up adds two controllers:
 | [`experiments.py`](starter_code/experiments.py) | model specifications, training, rollout suites, timing |
 | [`phase_robustness.py`](starter_code/phase_robustness.py) | two-period runs from four aligned starting phases |
 | [`revised_analysis.py`](starter_code/revised_analysis.py), [`followup_analysis.py`](starter_code/followup_analysis.py) | aggregate statistics and paired tests; collisions along the path |
-| [`blog_figs.py`](starter_code/blog_figs.py), [`followup_figs.py`](starter_code/followup_figs.py) | figures and GIF for the blog post |
+| [`blog_figs.py`](starter_code/blog_figs.py), [`followup_figs.py`](starter_code/followup_figs.py), [`followup_gifs.py`](starter_code/followup_gifs.py) | figures and GIFs for the blog post |
 
 ## Reproduce
 
@@ -72,7 +72,7 @@ python experiments.py rollout --suite path_frontier
 python experiments.py rollout --suite path_det
 python experiments.py rollout --suite heldout
 python experiments.py timing_followup
-python followup_analysis.py && python followup_figs.py
+python followup_analysis.py && python followup_figs.py && python followup_gifs.py
 ```
 
 Trained models (`results/models/`) and raw rollouts (`results/*.pkl`) are not committed; the commands above regenerate them. `report.md` holds my earlier Korean notes on this project from a first round of experiments with a simpler risk approximation; the blog post and the numbers above come from `results/revised_summary.json` and `results/followup_summary.json`.
