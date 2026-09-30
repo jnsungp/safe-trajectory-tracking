@@ -76,8 +76,21 @@ def model_specs():
     specs["revised_rbf_medium_k1"] = dict(value_type="rbf", grid="medium", noise_scale=1.0, risk_mode="exact_disks",
                                           rbf_fit="ls", rbf_online_value="interpolated", rbf_stride_t=1,
                                           rbf_stride_e=2, rbf_ls_t=0.8, rbf_ls_e=1.6)
+    # Path-aware risk: the largest collision probability along each step's arc (4 points per step)
+    for k in NOISE_LEVELS:
+        specs[f"path_grid_medium_{_kname(k)}"] = dict(value_type="grid", grid="medium", noise_scale=k,
+                                                     risk_mode="exact_disks", risk_substeps=4)
+    for lam in (10, 100, 10000):
+        specs[f"path_grid_medium_k1_lam{lam}"] = dict(value_type="grid", grid="medium", noise_scale=1.0,
+                                                      risk_mode="exact_disks", risk_substeps=4,
+                                                      collision_penalty=float(lam))
+    # same path risk, noise-free transitions (the DP counterpart of CEC's noise-free predictions)
+    for k in (1.0, 2.0):
+        specs[f"path_grid_medium_{_kname(k)}_det"] = dict(value_type="grid", grid="medium", noise_scale=0.0,
+                                                          risk_sigma=0.04 * k, risk_mode="exact_disks",
+                                                          risk_substeps=4)
     for name, spec in specs.items():
-        if not name.startswith("revised_"):
+        if not name.startswith(("revised_", "path_")):
             spec.setdefault("risk_mode", "independent_halfplane")
             spec.setdefault("rbf_online_value", "kernel")
     return specs
@@ -103,7 +116,7 @@ def train(names, num_iters=20, tol=0.05, max_gpu_gb=4.0):
         gpi = GPI(cfg)
         # The high-risk-penalty policy needs a few more updates to meet the same
         # value-change tolerance used by the other revised models.
-        model_iters = max(num_iters, 30) if name == "revised_grid_medium_k1_lam10000" else num_iters
+        model_iters = max(num_iters, 30) if name.endswith("_k1_lam10000") else num_iters
         gpi.compute_policy(num_iters=model_iters, tol=tol)
         gpi.save(out)
         print(f"[done] {name}: offline={gpi.offline_sec:.1f}s peak_gpu={gpi.peak_gpu_mb:.0f}MB "
@@ -119,13 +132,21 @@ _CACHE = {}
 
 
 def make_controller(spec):
-    """spec: ('CEC', kwargs) or ('GPI', model_name, online_mode)."""
+    """spec: ('CEC', kwargs), ('RiskCEC', kwargs) or ('GPI', model_name, online_mode[, overrides])."""
     key = json.dumps(spec, sort_keys=True)
     if key in _CACHE:
         return _CACHE[key]
     if spec[0] == "CEC":
         from cec import CEC
         ctrl = CEC(**spec[1])
+    elif spec[0] == "RiskCEC":
+        import torch
+        torch.set_num_threads(1)
+        from cec_risk import RiskCEC
+        kw = dict(spec[1])
+        if kw.get("value_model"):
+            kw["value_model"] = os.path.join(MODELS_DIR, f"{kw['value_model']}.npz")
+        ctrl = RiskCEC(**kw)
     else:
         import torch
         torch.set_num_threads(1)
@@ -137,11 +158,69 @@ def make_controller(spec):
     return ctrl
 
 
+def _risk_sigma(k):
+    return max(0.04 * k, 0.01)  # GPI's risk-term sigma: the noise level with a 1 cm floor
+
+
+def riskcec_spec(k, lam=1000.0, **kw):
+    return ("RiskCEC", dict(horizon=10, lam=float(lam), risk_sigma=_risk_sigma(k), **kw))
+
+
+def hybrid_spec(k, lam=1000.0):
+    """Path-aware risk CEC with the path-aware GPI value as terminal cost and the GPI plan as a second start."""
+    lam_tag = "" if lam == 1000 else f"_lam{int(lam)}"
+    return riskcec_spec(k, lam, hard=True, risk_substeps=4, policy_seed=True,
+                        value_model=f"path_grid_medium_{_kname(k)}{lam_tag}")
+
+
+FOLLOWUP_LEVELS = [0.0, 0.25, 0.5, 1.0, 2.0]
+HELDOUT_SEEDS = list(range(1000, 1200))
+
+
 def suite(name, levels=None):
     """List of (label, controller spec, noise scale, seeds)."""
     seeds = list(range(N_SEEDS))
     runs = []
-    if name == "main":
+    if name == "riskcec":  # CEC with GPI's calibrated risk (next-sample risk, as in the revised GPI)
+        for k in (levels if levels is not None else FOLLOWUP_LEVELS):
+            sd = [0] if k == 0 else seeds
+            runs += [
+                ("RiskCEC-soft", riskcec_spec(k), k, sd),
+                ("RiskCEC-hard", riskcec_spec(k, hard=True), k, sd),
+                ("RiskCEC-V", riskcec_spec(k, hard=True, value_model=f"revised_grid_medium_{_kname(k)}"), k, sd),
+            ]
+        if levels is None or 1.0 in levels:
+            for n in (20, 40):
+                spec = ("RiskCEC", dict(riskcec_spec(1.0, hard=True)[1], horizon=n))
+                runs.append((f"RiskCEC-hard-N{n}", spec, 1.0, seeds))
+    elif name == "path":  # path-aware risk and constraints
+        for k in (levels if levels is not None else FOLLOWUP_LEVELS):
+            sd = [0] if k == 0 else seeds
+            runs += [
+                ("GPI-path", ("GPI", f"path_grid_medium_{_kname(k)}", "lookahead"), k, sd),
+                ("CEC-path", ("CEC", {"horizon": 10, "substeps": 4}), k, sd),
+                ("Hybrid", hybrid_spec(k), k, sd),
+            ]
+        if levels is None or 1.0 in levels:
+            spec = ("RiskCEC", {key: v for key, v in hybrid_spec(1.0)[1].items() if key != "policy_seed"})
+            runs.append(("RiskCEC-path-V", spec, 1.0, seeds))
+    elif name == "path_frontier":  # noise x1: lambda sweeps and CEC margins, all path-aware
+        for lam in (10, 100, 10000):
+            runs.append((f"GPI-path-lam{lam}", ("GPI", f"path_grid_medium_k1_lam{lam}", "lookahead"), 1.0, seeds))
+            runs.append((f"Hybrid-lam{lam}", hybrid_spec(1.0, lam), 1.0, seeds))
+        for m in (0.025, 0.05, 0.1):
+            runs.append((f"CEC-path-m{m:g}", ("CEC", {"horizon": 10, "substeps": 4, "margin": m}), 1.0, seeds))
+    elif name == "path_det":  # does the transition noise matter once the risk looks along the path?
+        for k in (1.0, 2.0):
+            runs.append(("GPI-path-det", ("GPI", f"path_grid_medium_{_kname(k)}_det", "lookahead"), k, seeds))
+        spec = ("RiskCEC", dict(hybrid_spec(2.0)[1], warm_start=False))
+        runs.append(("Hybrid-planonly", spec, 2.0, seeds))
+    elif name == "heldout":  # headline controllers at noise x1 on seeds never used before
+        runs += [("CEC", ("CEC", {"horizon": 10}), 1.0, HELDOUT_SEEDS),
+                 ("GPI", ("GPI", "revised_grid_medium_k1", "lookahead"), 1.0, HELDOUT_SEEDS),
+                 ("GPI-path", ("GPI", "path_grid_medium_k1", "lookahead"), 1.0, HELDOUT_SEEDS),
+                 ("Hybrid", hybrid_spec(1.0), 1.0, HELDOUT_SEEDS)]
+    elif name == "main":
         for k in (levels if levels is not None else NOISE_LEVELS):
             sd = [0] if k == 0 else seeds  # k = 0 is deterministic
             kn = _kname(k)
@@ -272,6 +351,31 @@ def timing(n_eps=3, revised=False):
         json.dump(out, fh, indent=1)
 
 
+def timing_followup(n_eps=3):
+    """Per-step control time of the follow-up controllers at noise x1, single process."""
+    import torch
+    torch.set_num_threads(1)
+    specs = [
+        ("CEC, path constraints", ("CEC", {"horizon": 10, "substeps": 4})),
+        ("risk-aware CEC, constraints", riskcec_spec(1.0, hard=True)),
+        ("risk-aware CEC + GPI value", riskcec_spec(1.0, hard=True, value_model="revised_grid_medium_k1")),
+        ("GPI, path risk, lookahead", ("GPI", "path_grid_medium_k1", "lookahead")),
+        ("hybrid (path risk, value, policy start)", hybrid_spec(1.0)),
+    ]
+    out = []
+    for label, spec in specs:
+        ctrl = make_controller(spec)
+        ts = []
+        for s in range(n_eps):
+            r = C.rollout(ctrl, noise_scale=1.0, seed=1000 + s, keep_traj=False)
+            ts.append((r["ctrl_ms_mean"], r["ctrl_ms_p95"], r["ctrl_ms_max"]))
+        ts = np.array(ts)
+        out.append(dict(controller=label, ms_mean=ts[:, 0].mean(), ms_p95=ts[:, 1].mean(), ms_max=ts[:, 2].max()))
+        print(out[-1], flush=True)
+    with open(os.path.join(RESULTS, "followup_timing.json"), "w") as fh:
+        json.dump(out, fh, indent=1)
+
+
 def offline_timing(n_iters=2):
     """Clean (single job) offline cost of one GPI iteration (1 improvement + num_evals evaluations)."""
     import torch
@@ -302,7 +406,8 @@ def offline_timing(n_iters=2):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["train", "rollout", "timing", "timing_revised", "offline_timing", "list"])
+    ap.add_argument("cmd", choices=["train", "rollout", "timing", "timing_revised", "timing_followup",
+                                    "offline_timing", "list"])
     ap.add_argument("--models", nargs="*", default=[])
     ap.add_argument("--suite", default="main")
     ap.add_argument("--workers", type=int, default=28)
@@ -316,6 +421,8 @@ if __name__ == "__main__":
         run_suite(a.suite, a.workers, a.levels, a.tag)
     elif a.cmd == "timing":
         timing()
+    elif a.cmd == "timing_followup":
+        timing_followup()
     elif a.cmd == "timing_revised":
         timing(revised=True)
     elif a.cmd == "offline_timing":

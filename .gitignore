@@ -5,6 +5,8 @@ starter_code/results/models/
 starter_code/results/*.pkl
 starter_code/results/logs/revised_*.log
 starter_code/results/logs/rbf_evaluator_ablation.log
+starter_code/results/logs/followup_*.log
+starter_code/results/logs/path_*.log
 starter_code/fig/animation*.gif
 # course handout (not redistributed) and unrelated blog build files
 *.pdf

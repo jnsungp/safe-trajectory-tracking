@@ -62,6 +62,7 @@ table.paper thead tr:last-child th { border-bottom: 1px solid var(--table-rule);
 table.paper th.group { border-bottom: 1px solid var(--table-rule); }
 table.paper th.gap, table.paper td.gap { padding: 0 4px; border: none; }
 table.paper .hl { color: var(--accent); }
+table.paper.compact th, table.paper.compact td { padding: 5px 9px; }
 .muted { color: var(--muted); }
 .footnote { font-size: 15px; color: var(--ink2); }
 hr { border: 0; border-top: 1px solid var(--rule); margin: 36px 0; }

@@ -1,0 +1,32 @@
+[
+ {
+  "controller": "CEC, path constraints",
+  "ms_mean": 12.556028287185148,
+  "ms_p95": 20.69868206356961,
+  "ms_max": 46.23819328844547
+ },
+ {
+  "controller": "risk-aware CEC, constraints",
+  "ms_mean": 10.995903238654137,
+  "ms_p95": 18.384280723209177,
+  "ms_max": 27.130121365189552
+ },
+ {
+  "controller": "risk-aware CEC + GPI value",
+  "ms_mean": 32.224835605464044,
+  "ms_p95": 38.475404291724146,
+  "ms_max": 1169.1452953964472
+ },
+ {
+  "controller": "GPI, path risk, lookahead",
+  "ms_mean": 2.6643617880634136,
+  "ms_p95": 3.226837096735835,
+  "ms_max": 3.6875586956739426
+ },
+ {
+  "controller": "hybrid (path risk, value, policy start)",
+  "ms_mean": 271.599590660642,
+  "ms_p95": 1419.3807171502447,
+  "ms_max": 3249.4571451097727
+ }
+]

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Safe Trajectory Tracking under Motion Uncertainty</title>
 <meta name="author" content="Junsung Park">
-<meta name="description" content="CEC, tabular GPI and RBF GPI on a noisy trajectory-tracking task with a five-centimeter gap between obstacles: collision rates, first contact, and where the safety margin comes from.">
+<meta name="description" content="CEC, tabular GPI and RBF GPI on a noisy trajectory-tracking task with a five-centimeter gap between obstacles: collision rates, first contact, where the safety margin comes from, and a follow-up that gives CEC the same risk and checks collisions between samples.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:ital,wght@0,300;0,400;0,600;0,700;1,400&family=Source+Code+Pro&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="post.css">
@@ -37,6 +37,13 @@
   Tabular GPI tracks less closely but keeps a margin sized to the noise, and at high noise it takes a longer route around the tightest gap.
   The RBF version saves memory and loses most of that safety.
   The environment turns out to contain a five-centimeter gap that the reference drives straight through, and most of the story is about how each method handles that gap.
+</p>
+<p>
+  A follow-up at the end of the post changes part of this picture.
+  Giving CEC the same calibrated collision probability as GPI first made it worse; it also needed GPI's value function and GPI's plan.
+  Along the way it turned out that GPI's low collision rates at moderate noise came partly from how collisions were counted, only at the samples: GPI had learned to cross the gap at full speed, so that its two samples land on either side.
+  Checked along the path, it collides in 72.5% of episodes at noise ×0.5, not 5.5%.
+  A risk term that looks along the whole step closes the loophole and shows what the gap really costs.
 </p>
 
 <h2>The setup</h2>
@@ -139,6 +146,7 @@ V^*(\tau, e) = \min_\pi \ \mathbb E \Big[\sum_{t \ge \tau} \gamma^{t-\tau} \big(
   At ×1 it takes the inner detour on the right-hand lobe but keeps the left-hand gap, using 40% of the gap passages; it collides in 41.5% of episodes.
   At ×2 it avoids every gap, and the collision rate <i>falls</i> to 20.5% even though the noise doubled.
   Its tracking error rises from 9.9 to 28 to 50 cm across those three levels: the safer high-noise policy pays for the detour.
+  At ×0.5 and ×1 it crosses the gaps it uses at full speed; <a href="#between-samples">What the samples miss</a> below shows what that hides.
 </p>
 
 <h2>Where GPI's margin comes from</h2>
@@ -238,11 +246,174 @@ V^*(\tau, e) = \min_\pi \ \mathbb E \Big[\sum_{t \ge \tau} \gamma^{t-\tau} \big(
   Pure table lookup is the fastest option, but it rounds the robot's state to the nearest grid node and gives up the margin that the lookahead keeps.
 </p>
 
+<h2>Giving CEC the noise model</h2>
+<p>
+  The comparison so far mixes two differences between the controllers: GPI knows the noise level, and GPI plans over an infinite horizon.
+  To separate them, I gave CEC exactly GPI's stage cost, including the calibrated collision probability with the same \(\lambda = 1000\) and noise level, and kept the rest of CEC: noise-free predictions, ten steps, and IPOPT warm-started from the previous plan.
+  Along the noise-free prediction, this is the objective of the ablation's GPI with a deterministic transition, which collides about as often as the full policy (38.5% against 41.5%).
+</p>
+<p>
+  The probability enters as a penalty, not as a constraint.
+  Chance-constrained planners bound it instead (<a href="https://doi.org/10.1109/TRO.2011.2161160">Blackmore et al., 2011</a>; <a href="https://ieeexplore.ieee.org/document/8613928">Zhu &amp; Alonso-Mora, 2019</a>).
+  With a fixed per-step noise level, such a bound amounts to a margin on every obstacle, so the CEC margins of 2.5, 5 and 10 cm tested earlier are per-step risk bounds of 27%, 11% and 0.6%.
+  Inside the gap no bound below 51% can be met, which is why those runs fell back on their slack variables.
+</p>
+<figure>
+<div class="table-wrap"><table class="paper compact">
+  <thead>
+    <tr><th></th><th class="group" colspan="4">collision rate (%)</th><th class="gap"></th><th class="group" colspan="4">tracking error (cm)</th></tr>
+    <tr><th></th><th>×0.25</th><th>×0.5</th><th>×1</th><th>×2</th><th class="gap"></th><th>×0.25</th><th>×0.5</th><th>×1</th><th>×2</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>CEC</td><td>100</td><td>100</td><td>100</td><td>100</td><td class="gap"></td><td>5.6</td><td>6.9</td><td>9.6</td><td>15.8</td></tr>
+    <tr><td>risk-aware CEC</td><td>100</td><td>81.5</td><td>100</td><td>96.5</td><td class="gap"></td><td>2.2</td><td>31.5</td><td>80.2</td><td>101</td></tr>
+    <tr><td>+ constraints</td><td>0.5</td><td>79</td><td>100</td><td>96</td><td class="gap"></td><td>6.4</td><td>41.4</td><td>79.3</td><td>98.3</td></tr>
+    <tr><td>+ GPI value</td><td>0</td><td>54.5</td><td>78</td><td>34</td><td class="gap"></td><td>6.6</td><td>35.2</td><td>34.6</td><td>49.0</td></tr>
+    <tr><td class="hl">tabular GPI</td><td class="hl">0</td><td class="hl">5.5</td><td class="hl">41.5</td><td class="hl">20.5</td><td class="gap"></td><td class="hl">7.1</td><td class="hl">9.8</td><td class="hl">27.9</td><td class="hl">49.7</td></tr>
+  </tbody>
+</table></div>
+<figcaption>Collisions at sampled positions, as everywhere above; 200 paired episodes per cell. Each "+" row adds to the row above it: the risk-aware CEC minimizes GPI's stage cost, "+ constraints" also keeps CEC's obstacle constraints on the noise-free positions, and "+ GPI value" also uses GPI's value function as the terminal cost.</figcaption>
+</figure>
+<p>
+  The first version made CEC worse.
+  It collided in every episode at noise ×0.25, even though its tracking error fell to 2.2 cm, and in 81.5–100% of episodes at higher noise, with tracking errors up to a meter.
+  Two separate problems caused this.
+</p>
+<figure class="wide">
+  <img class="fig" src="assets/riskcec_failures.png" alt="Risk-aware CEC paths through C1, the collision probability of one sample against distance, and mean tracking error over time">
+  <figcaption><b>Left:</b> the risk-aware CEC at noise ×0.25, twenty seeds, drives through C1. <b>Middle:</b> the collision probability of one sample against its distance from the inflated obstacle; two consecutive predicted positions, 17 cm apart, can both sit where the curve is flat. <b>Right:</b> mean tracking error over 200 episodes at noise ×1. The peaks are the passes of C1 and C2; the first two variants overlap.</figcaption>
+</figure>
+<p>
+  <b>The probability has no slope where the plan is.</b>
+  The collision probability of a sample rises from zero to one within about three standard deviations of the obstacle's edge, a 6 cm band at noise ×0.25.
+  Near C1, consecutive predicted positions are about 17 cm apart, so a plan can put one position just before the band and the next deep inside it, where the probability is one and its gradient is zero.
+  Nothing then pushes the plan back out, and the controller follows the reference straight through C1, 40 cm deep in the median episode; it does the same without any noise.
+  Keeping CEC's obstacle constraints on the noise-free positions restores a gradient everywhere, and with them the controller collides in 1 of 200 episodes at ×0.25, at 6.4 cm of tracking error.
+</p>
+<p>
+  <b>Ten steps are too short.</b>
+  At noise ×1, going through the gap costs about \(0.51\,\lambda\) per sample.
+  Within a ten-step window, circling at the minimum speed looks cheaper, because falling behind the reference costs little at first.
+  The robot falls up to 2.5 m behind at the passes of C1 and C2 and collides while catching up: every episode, with 79 cm of tracking error.
+  A longer window helps only partly, and not monotonically (48.5% collisions with 20 steps, 80% with 40), because what happens after the window is still missing from the cost.
+  That missing cost is exactly GPI's value function.
+  With the value as the terminal cost, as in POLO (<a href="https://arxiv.org/abs/1811.01848">Lowrey et al., 2019</a>), the stall disappears: the controller takes GPI's route, detouring on the right-hand lobe and using the left-hand gap in 40% of passages, and its tracking error falls to 35 cm.
+</p>
+<details>
+  <summary>Making GPI's value usable by IPOPT</summary>
+  <div>
+    <p>GPI's table is multilinear between grid nodes, so its gradient jumps at every cell face, and with it as the terminal cost IPOPT mostly ran into its iteration limit. Instead, at every step I sample GPI's value on a window of 17 × 17 × 46 nodes around the planned end state (0.1 m and 9°, GPI's own spacing near the reference) and use the samples as the control points of a cubic B-spline. That spline has continuous second derivatives and stays within the range of the nearby table values, so the optimizer cannot exploit overshoot, the failure that sank the least-squares RBF above. A quadratic penalty outside the window works as a trust region, and the window moves with the plan.</p>
+  </div>
+</details>
+<p>
+  Even so, the risk-aware CEC collides more often than GPI: 54.5% against 5.5% at noise ×0.5 and 78% against 41.5% at ×1 (paired exact McNemar p &lt; 10<sup>−13</sup> at both levels).
+  The difference sits at the gaps.
+  Both controllers cross them at full speed, but GPI gets there directly, while the risk-aware CEC first creeps up to the entrance: 0.13 m/s on average over the three steps before a crossing, against 0.54 m/s for GPI (noise ×0.5).
+  Why GPI crosses the gaps at full speed turned out to matter more than the rest of this comparison.
+</p>
+
+<h2 id="between-samples">What the samples miss</h2>
+<p>
+  At noise ×0.5 and ×1, tabular GPI crosses every gap it uses at the maximum speed of 1 m/s, which is half a meter per step.
+  Its two samples then land on either side of the 5 cm gap, and the collision check, which looks only at the samples, sees two safe positions.
+  CEC, hugging its constraints, crosses at about 0.75 m/s.
+</p>
+<figure class="wide">
+  <img class="fig" src="assets/gap_dash.png" alt="GPI's samples and paths at the C2-C4 gap, and collision rates counted at samples and along the path">
+  <figcaption><b>Left:</b> twelve crossings of the C2–C4 gap by tabular GPI at noise ×0.5. Dots are the samples, lines the paths between them, and black marks where a path is inside an inflated obstacle. <b>Right:</b> collision rate over 200 episodes, counted at the samples and along the path; shading shows 95% intervals.</figcaption>
+</figure>
+<p>
+  To see what happens between the samples, I checked every step along its path: the noise-free arc from the sample, with that step's noise blended in linearly, at 21 points.
+  Counted this way, GPI collides in 72.5% of episodes at noise ×0.5 instead of 5.5%, and in 84% at ×1 instead of 41.5%.
+  At both levels, in every episode that collides along the path but never at a sample, the first such collision is at a gap crossing.
+  The conclusion does not hinge on how the noise is blended in: the commanded arcs alone, without any noise, enter an obstacle in 62.5% of episodes at ×0.5 and 77% at ×1.
+  CEC still collides in every episode, and RBF GPI, which also crosses the gaps at full speed, rises to 89.5–100%.
+</p>
+<p>
+  GPI optimized exactly what I asked for: its risk term scores only the next sample, and the policy found the loophole.
+  Checking constraints only at discrete points is a known pitfall in trajectory optimization; TrajOpt, for example, checks the swept volume between waypoints (<a href="https://doi.org/10.1177/0278364914528132">Schulman et al., 2014</a>), and risk-bounded planners bound the collision probability over continuous time (<a href="https://www.roboticsproceedings.org/rss17/p069.html">Jasour et al., 2021</a>).
+  The fix on GPI's side is a risk term that looks along the path.
+  For every step it takes the largest collision probability at four points of the noise-free arc, with the noise growing linearly over the step (standard deviation \(s\sigma\) at fraction \(s\) of the step).
+  For a full-speed dash through the middle of the gap, this doubles the step's risk at noise ×1 and multiplies it by nine at ×0.5.
+  I retrained GPI with it at every noise level, about three minutes per policy.
+</p>
+<figure class="wide">
+  <img class="fig" src="assets/path_sweep.png" alt="Tracking error, collision rate along the path and steps until the first collision for CEC, GPI with each risk, and the hybrid">
+  <figcaption>Collisions counted along the path; 200 paired episodes per point, shading shows 95% intervals. CEC here also constrains four points along each step of its plan. The hybrid is introduced in the next section.</figcaption>
+</figure>
+<p>
+  With the path-aware risk, GPI changes its decision where the loophole mattered most: at noise ×1 it detours around both lobes and collides along the path in none of the 200 episodes (against 84%), at 44 cm of tracking error instead of 28.
+  At ×0.25 it still takes every gap, now with 11% collisions along the path instead of 32%.
+  At ×0.5 it also keeps the gaps, and it now prices them honestly: at a crossing it predicts a 12.5% chance of a collision along the path and realizes 18%, and over an episode it collides along the path in 64% (and at a sample in 39%, up from 5.5%, because it no longer places its samples around the gap).
+  At this noise level, a penalty of \(\lambda = 1000\) does not make the detour worth it.
+  At ×2, where GPI already avoided the gaps, the change is small (20.5% against 28.5%) and costs tracking (82 against 50 cm).
+</p>
+
+<h2>Handing CEC the route</h2>
+<p>
+  With the path-aware risk in both its stage cost and GPI's value, the risk-aware CEC takes the same detours as GPI at noise ×1, and collides along the path in 8% of episodes at 41 cm of tracking error.
+  On the left-hand lobe it keeps following the reference down the outer side before it turns back; GPI turns at the top.
+  The terminal value says the outer side leads into a dead end, but a local optimizer only compares plans near its warm start, and turning back at the top belongs to a different homotopy class.
+  Topology-aware local planners keep several such candidates (<a href="https://doi.org/10.1016/j.robot.2016.11.007">Rösmann et al., 2017</a>).
+  Here the natural second candidate is GPI's own plan: at every step, IPOPT also starts from ten steps of the GPI policy on the noise-free model, and the controller keeps the cheaper of the two solutions.
+  I'll call this the hybrid.
+</p>
+<figure class="wide">
+  <img class="fig" src="assets/funnel.png" alt="Left-hand lobe at noise 1 for the risk-aware CEC with GPI's value, with GPI's plan as a start, and path-aware GPI">
+  <figcaption>The left-hand lobe at noise ×1, twenty seeds, all with the path-aware risk. The cross marks a first collision along the path.</figcaption>
+</figure>
+<p>
+  At noise ×1 the hybrid turns back at the top like GPI, collides along the path in 4% of episodes, and tracks 9 cm closer to the reference than path-aware GPI (35 against 44 cm, closer in every one of the 200 paired episodes).
+  At ×0.25 and ×0.5 it is both safer and closer: 0.5% against 11% and 52% against 64% of episodes with a collision along the path, at 6.5 against 10.0 cm and 8.4 against 12.9 cm.
+  At ×2 it fails, with 72% against 20.5%.
+</p>
+<figure>
+<div class="table-wrap"><table class="paper">
+  <thead>
+    <tr><th></th><th class="group" colspan="3">seeds 0–199</th><th class="gap"></th><th class="group" colspan="2">seeds 1000–1199</th></tr>
+    <tr><th>noise ×1</th><th>samples (%)</th><th>path (%)</th><th>error (cm)</th><th class="gap"></th><th>path (%)</th><th>error (cm)</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>CEC</td><td>100</td><td>100</td><td>9.6</td><td class="gap"></td><td>100</td><td>9.6</td></tr>
+    <tr><td>GPI, sample risk</td><td>41.5</td><td>84</td><td>27.9</td><td class="gap"></td><td>85</td><td>28.0</td></tr>
+    <tr><td>GPI, path risk</td><td>0</td><td>0</td><td>44.3</td><td class="gap"></td><td>0</td><td>44.2</td></tr>
+    <tr><td class="hl">hybrid</td><td class="hl">3.5</td><td class="hl">4</td><td class="hl">35.2</td><td class="gap"></td><td class="hl">2</td><td class="hl">35.2</td></tr>
+  </tbody>
+</table></div>
+<figcaption>Collision rates counted at the samples and along the path, and tracking error, at noise ×1; 200 paired episodes per cell. The right-hand columns repeat the run on seeds used nowhere else in this post.</figcaption>
+</figure>
+<p>
+  The hybrid's remaining weakness is one it shares with every CEC here: its predictions are noise-free.
+  GPI with noise-free transitions and the same path-aware risk shows the same pattern, 2.5% at noise ×1 and 42% at ×2, against 0% and 20.5% with noisy transitions (paired p = 0.06 and 6 × 10<sup>−7</sup>).
+  Starting IPOPT only from GPI's plan makes ×2 worse, not better (81%), so it is the noise-free objective, not the choice of start, that prefers the risky routes.
+  This is the case the ablation above left open: once the risk looks along the path and the noise reaches 8 cm per step, the noise in the transition matters.
+</p>
+<figure>
+  <img class="fig" src="assets/path_frontier.png" alt="Collision rate along the path versus tracking error at noise 1 for CEC margins, GPI with each risk, and the hybrid">
+  <figcaption>Each point is a separately configured controller evaluated on the same 200 episodes at noise ×1, with collisions counted along the path. The dashed curve is the λ sweep from "The price of avoiding the gap", recounted.</figcaption>
+</figure>
+<p>
+  The penalty sweep gives the comparison at matched safety.
+  With \(\lambda = 10\) or 100, every controller takes the gaps and collides along the path in 98–100% of episodes, whatever it optimizes.
+  At \(\lambda = 1000\), the hybrid and path-aware GPI are nearly equally safe (4% and 0%), and the hybrid tracks 9 cm closer.
+  At \(\lambda = 10{,}000\), path-aware GPI stays clear of everything at 116 cm of tracking error, while the hybrid tracks at 81 cm and collides in 35% of episodes.
+  CEC with path constraints stays at 99.5–100% for every margin.
+</p>
+<p>
+  So, to answer the question from last time: knowing the noise was not enough.
+  CEC needed the calibrated risk, a constraint to give that risk a gradient, GPI's value to see past its horizon, and GPI's plan to change route.
+  With all four it is safer than path-aware GPI at low noise and nearly as safe at noise ×1, and it tracks closer at every noise level; at noise ×2 its noise-free predictions cost it that safety.
+  Global planning chose the route, and local optimization refined it.
+  The refinement is not cheap: the hybrid needs 272 ms per step on average in a single process, within the 500 ms control period, but its slowest 5% of steps take 1.4 s or more.
+  Path-aware GPI needs 2.7 ms.
+</p>
+
 <h2>What this does and does not show</h2>
 <ul>
-  <li>The collision rates are for sampled robot positions in one simulated layout with i.i.d. Gaussian noise. They are not guarantees for continuous paths or a physical robot.</li>
-  <li>GPI knows the noise level and optimizes tracking plus a calibrated risk penalty; CEC uses nominal dynamics, a finite horizon and slack-penalized constraints. The comparison does not isolate dynamic programming from model-predictive control.</li>
-  <li>The λ sweep and all checks reuse seeds 0–199. The zero-collision point at λ = 10,000 is an observation on those seeds, not a held-out safety validation.</li>
+  <li>The collision rates are for one simulated layout with i.i.d. Gaussian noise, not guarantees for a physical robot. Except where marked as counted along the path, they are for sampled positions.</li>
+  <li>The discrete-time model does not define the motion between samples. The path check blends each step's noise linearly into the noise-free arc; that is one reasonable reading, and the path-aware risk uses the same one. It scores four points per step, which can only underestimate the probability that the path enters an obstacle; the check itself uses 21.</li>
+  <li>The follow-up separates the noise model from global planning for this CEC, a ten-step NLP solved by IPOPT from a warm start. A different local optimizer might need less help from GPI. The hybrid is not a standalone CEC: it relies on GPI's offline value function and policy.</li>
+  <li>The λ sweeps and most checks reuse seeds 0–199. Only the headline controllers of the follow-up were rerun on unseen seeds 1000–1199.</li>
   <li>The additive disk probability is exact because these inflated obstacles do not overlap; its combination with the workspace boundary is approximate where an obstacle extends past the square.</li>
   <li>The noise-free GPI policy keeps a 1 cm smoothing floor in its risk term, so the noise-free run compares deployed policies rather than a shared deterministic objective.</li>
   <li>The RBF results cover Gaussian kernels on a uniform lattice. Obstacle-aware features or a different compressed representation might do better.</li>
@@ -250,9 +421,11 @@ V^*(\tau, e) = \min_\pi \ \mathbb E \Big[\sum_{t \ge \tau} \gamma^{t-\tau} \big(
 
 <h2>What I'll try next</h2>
 <p>
-  The most direct next step is to give CEC the same calibrated collision probability and compare both controllers at matched safety targets.
-  That would separate "knows the noise" from "plans globally".
-  I would also vary the width of the gap to see how the detour threshold moves, which tests whether the route-and-margin explanation holds beyond this particular five-centimeter gap.
+  The hybrid's weakness at high noise points to the next change: predictions that carry the noise, for example a few sampled noise sequences per plan, instead of the single noise-free rollout that every CEC here uses.
+  The path-aware risk is optimistic by construction, since four points can miss part of a step.
+  A continuous-time bound on crossing an obstacle within a step would make it conservative instead, and it would show how much of the remaining margin depends on that choice.
+  The other item from last time is still open: varying the width of the gap to see how the detour threshold moves.
+  It is more interesting now, because the old threshold was partly set by the samples.
 </p>
 
 <h2>Code and data</h2>

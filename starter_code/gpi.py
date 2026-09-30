@@ -80,6 +80,9 @@ class GpiConfig:
     risk_sigma_floor: float = 0.01  # [m] smoothing of the collision indicator when noise_scale -> 0
     risk_sigma: float = -1.0  # [m] if > 0, overrides the risk-term sigma (used by the 2x2 ablation)
     risk_mode: str = "exact_disks"  # legacy saved models retain "independent_halfplane"
+    # > 1: the risk term looks along the step's arc. It is the largest of P(arc(s) + s w in an obstacle)
+    # over s = 1/M, ..., 1, with the step's noise w blended in linearly (std s * sigma). 1: next sample only.
+    risk_substeps: int = 1
     value_type: str = "grid"  # "grid" (Part 2) or "rbf" (Part 3)
     # RBF features (eq. 6): centers on a stride sub-lattice, lengthscales in grid-index units.
     # beta_t = 1 / (2 ls_t^2), beta_e = 1 / (2 ls_e^2); alpha is absorbed into theta.
@@ -152,15 +155,26 @@ class GPI:
             if overlap.any():
                 raise ValueError("exact_disks requires disjoint inflated obstacles")
             self.risk_lookup_step = 0.0005
-            self.risk_lookup = []
-            for radius in radii:
-                distances = np.arange(0.0, radius + 10 * self.sig_risk + self.risk_lookup_step,
-                                      self.risk_lookup_step)
-                prob = ncx2.cdf((radius / self.sig_risk) ** 2, 2,
-                                 (distances / self.sig_risk) ** 2)
-                self.risk_lookup.append(torch.tensor(prob, **f32))
+
+            def disk_tables(sig):
+                tables = []
+                for radius in radii:
+                    distances = np.arange(0.0, radius + 10 * sig + self.risk_lookup_step,
+                                          self.risk_lookup_step)
+                    prob = ncx2.cdf((radius / sig) ** 2, 2, (distances / sig) ** 2)
+                    tables.append(torch.tensor(prob, **f32))
+                return tables
+
+            self.risk_lookup = disk_tables(self.sig_risk)
+            # intermediate points of the arc, s = 1/M .. (M-1)/M; the noise so far has std s * sigma
+            M = cfg.risk_substeps
+            self.sub_fracs = [m / M for m in range(1, M)]
+            self.sub_sigs = [max(s * self.sig_risk, 1e-3) for s in self.sub_fracs]
+            self.sub_lookup = [disk_tables(sig) for sig in self.sub_sigs]
         elif cfg.risk_mode != "independent_halfplane":
             raise ValueError(cfg.risk_mode)
+        elif cfg.risk_substeps > 1:
+            raise ValueError("risk_substeps > 1 needs risk_mode='exact_disks'")
         # all grid nodes, flattened in (ix, iy, ith) order to match V tables of shape (T, nx, ny, nth)
         EX, EY, ETH = torch.meshgrid(g.ex, g.ey, g.th, indexing="ij")
         self.E_all = torch.stack([EX.ravel(), EY.ravel(), ETH.ravel()], 1)  # (S, 3)
@@ -273,9 +287,10 @@ class GPI:
         mth = wrap_t(E[..., 2] + dt * om + self.dref[tt, 2][:, None])
         return mx, my, mth
 
-    def collision_risk(self, px, py):
-        """Next-state risk. The new mode integrates each disjoint disk exactly in 2D."""
-        sig = self.sig_risk
+    def collision_risk(self, px, py, sig=None, tables=None):
+        """Next-state risk. The new mode integrates each disjoint disk exactly in 2D.
+        sig, tables: noise level and disk tables of an intermediate arc point (default: full step)."""
+        sig = self.sig_risk if sig is None else sig
         m = self.config.collision_margin
         W = C.WORKSPACE
         if self.config.risk_mode == "independent_halfplane":
@@ -291,7 +306,7 @@ class GPI:
         for i in range(self.obs.shape[0]):
             cx, cy, _ = self.obs[i]
             distance = torch.sqrt((px - cx) ** 2 + (py - cy) ** 2)
-            table = self.risk_lookup[i]
+            table = (self.risk_lookup if tables is None else tables)[i]
             frac = (distance / self.risk_lookup_step).clamp(0, len(table) - 1)
             lo = frac.long().clamp(max=len(table) - 2)
             p_obs = p_obs + table[lo] + (frac - lo) * (table[lo + 1] - table[lo])
@@ -302,6 +317,23 @@ class GPI:
         # approximated here; it is negligible in the narrow corridors studied below.
         return torch.clamp(p_obs + (1 - p_obs) * p_oob, 0.0, 1.0)
 
+    def path_risk(self, tt, E, U, px, py):
+        """Risk of the step from e under u: the next sample only, or the largest risk along the arc."""
+        risk = self.collision_risk(px, py)
+        if self.config.risk_substeps <= 1:
+            return risk
+        x0 = E[..., 0] + self.ref[tt, 0][:, None]
+        y0 = E[..., 1] + self.ref[tt, 1][:, None]
+        th0 = E[..., 2] + self.ref[tt, 2][:, None]
+        v, om = U[..., 0], U[..., 1]
+        for s, sig, tables in zip(self.sub_fracs, self.sub_sigs, self.sub_lookup):
+            half = om * s * C.DT / 2
+            step = s * C.DT * torch.sinc(half / math.pi) * v
+            qx = x0 + step * torch.cos(th0 + half)
+            qy = y0 + step * torch.sin(th0 + half)
+            risk = torch.maximum(risk, self.collision_risk(qx, qy, sig, tables))
+        return risk
+
     def q_backup(self, tt, E, U, value_fn):
         """Q(t, e, u) = l(t, e, u) + gamma * E_w V(t+1, g(t, e, u, w)).
         tt: (Nt,) long, E: (Nt, M, 3), U: (Nt or 1, M, 2), value_fn(tn, qx, qy, qth) -> (Nt, M')."""
@@ -310,7 +342,7 @@ class GPI:
         ell = self.compute_stage_costs(E, U)
         px = mx + self.ref[tn, 0][:, None]
         py = my + self.ref[tn, 1][:, None]
-        ell = ell + self.config.collision_penalty * self.collision_risk(px, py)
+        ell = ell + self.config.collision_penalty * self.path_risk(tt, E, U, px, py)
         wn = self.w_nodes
         qx = (mx[..., None] + wn[:, 0]).flatten(1)
         qy = (my[..., None] + wn[:, 1]).flatten(1)

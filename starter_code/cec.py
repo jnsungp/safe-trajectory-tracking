@@ -35,7 +35,10 @@ class CEC:
     """
 
     def __init__(self, horizon: int = 10, terminal_weight: float = 5.0, margin: float = 0.0,
-                 slack_penalty: float = 1e4, cp: C.CostParams = C.COST, max_iter: int = 300) -> None:
+                 slack_penalty: float = 1e4, cp: C.CostParams = C.COST, max_iter: int = 300,
+                 substeps: int = 1) -> None:
+        """substeps = M > 1 also constrains the noise-free arc at s = 1/M, ..., (M-1)/M of every step
+        (same slack as the step's end point), so the planned path, not only its samples, stays clear."""
         self.N = N = horizon
         self.cp = cp
         self.margin = margin
@@ -61,9 +64,16 @@ class CEC:
         cost += cp.gamma ** N * terminal_weight * state_cost(N)
         obs_cons = []
         for k in range(1, N + 1):
-            for i, (cx, cy, r) in enumerate(C.OBSTACLES):
-                rr = r + C.ROBOT_RADIUS + margin
-                obs_cons.append((X[0, k] - cx) ** 2 + (X[1, k] - cy) ** 2 + S[i, k - 1] - rr ** 2)
+            points = [(X[0, k], X[1, k])]
+            for m in range(1, substeps):  # arc points inside step k-1 -> k
+                half = U[1, k - 1] * (m / substeps) * C.DT / 2
+                step = (m / substeps) * C.DT * _sinc_ca(half) * U[0, k - 1]
+                points.append((X[0, k - 1] + step * casadi.cos(X[2, k - 1] + half),
+                               X[1, k - 1] + step * casadi.sin(X[2, k - 1] + half)))
+            for px, py in points:
+                for i, (cx, cy, r) in enumerate(C.OBSTACLES):
+                    rr = r + C.ROBOT_RADIUS + margin
+                    obs_cons.append((px - cx) ** 2 + (py - cy) ** 2 + S[i, k - 1] - rr ** 2)
         cost += slack_penalty * casadi.sum1(casadi.vec(S))
         n_eq = 3 * (N + 1)
         g = casadi.vertcat(*cons, *obs_cons)
