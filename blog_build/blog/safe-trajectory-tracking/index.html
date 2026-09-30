@@ -25,7 +25,7 @@
 </div>
 
 <h1 class="title">Safe Trajectory Tracking under Motion Uncertainty</h1>
-<div class="byline"><a href="https://jnsungp.github.io/">Junsung Park</a><br>September 2026</div>
+<div class="byline"><a href="https://jnsungp.github.io/">Junsung Park</a><br>July 2026</div>
 
 <p>
   In the third project of ECE 276B, a differential-drive robot has to follow a figure-eight past four circular obstacles, and every half-second Gaussian noise pushes it off the path it predicted.
@@ -251,10 +251,6 @@ V^*(\tau, e) = \min_\pi \ \mathbb E \Big[\sum_{t \ge \tau} \gamma^{t-\tau} \big(
   Its two samples then land on either side of the 5 cm gap, and the collision check, which looks only at the samples, sees two safe positions.
   The gap itself is never checked.
 </p>
-<figure class="wide">
-  <img src="assets/gap_dash.gif" alt="Animated gap crossings of tabular GPI: the samples on the left, the magnified path through the gap on the right">
-  <figcaption>Noise ×0.5, tabular GPI: the first crossing of the C2–C4 gap in seeds 0–11, one after another. <b>Left:</b> the samples, which is all the collision check sees. <b>Right:</b> the square on the left, magnified; the path between two samples is black where it is inside an inflated obstacle. None of the samples is inside an obstacle, but 6 of the 12 paths touch one.</figcaption>
-</figure>
 <p>
   To see what happens between the samples, I checked every step along its path: the noise-free arc from the sample, with that step's noise blended in linearly, at 21 points.
   Counted this way, GPI collides in <b>72.5% of episodes at noise ×0.5 instead of 5.5%</b>, and in 84% at ×1 instead of 41.5%.
@@ -263,7 +259,7 @@ V^*(\tau, e) = \min_\pi \ \mathbb E \Big[\sum_{t \ge \tau} \gamma^{t-\tau} \big(
 </p>
 <figure class="wide">
   <img class="fig" src="assets/gap_dash.png" alt="GPI's samples and paths at the C2-C4 gap, and collision rates counted at samples and along the path">
-  <figcaption><b>Left:</b> twelve crossings of the C2–C4 gap at noise ×0.5, with the samples as dots. <b>Right:</b> collision rate over 200 episodes, counted at the samples and along the path; shading shows 95% intervals.</figcaption>
+  <figcaption><b>Left:</b> twelve crossings of the C2–C4 gap by tabular GPI at noise ×0.5. Dots are the samples, lines the paths between them, and black marks where a path is inside an inflated obstacle. <b>Right:</b> collision rate over 200 episodes, counted at the samples and along the path; shading shows 95% intervals.</figcaption>
 </figure>
 <p>
   In hindsight, GPI optimized exactly what I asked for: its risk term scores only the next sample, and the policy found the loophole.
